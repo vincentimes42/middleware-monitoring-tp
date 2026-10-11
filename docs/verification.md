@@ -5,11 +5,11 @@ After `docker compose up -d` (see `../README.md`), run each section
 in order. Every section ends with a `curl` that should return data —
 that is the evidence that the pipeline actually works.
 
-> **Prerequisite:** the Spring Boot TP1 app is instrumented (metrics, tracing,
-> log file) and running on the host at `http://localhost:8081/actuator/health`.
-> See `../README.md` §2 for the instrumentation. If the app is not up yet, run
-> Section 1 only — the stack starts regardless, and the backends stay healthy
-> with zero inbound data.
+> **Prerequisite:** the Spring Boot TP1 app (base compose in `../springboot`)
+> is up at `http://localhost:8080/actuator/health` and instrumented (metrics,
+> tracing, log file). See `../README.md` "Run" for the required base edits.
+> If the app is not up yet, run Section 1 only — the stack starts regardless,
+> and the backends stay healthy with zero inbound data.
 
 ---
 
@@ -34,8 +34,7 @@ Generate a few real HTTP requests **first**:
 
 ```bash
 for i in $(seq 1 10); do
-  curl -s -o /dev/null http://localhost:8081/listings
-  curl -s -o /dev/null http://localhost:8081/create
+  curl -s -o /dev/null http://localhost:8080/listings
 done
 ```
 
@@ -76,7 +75,7 @@ curl -s -X POST http://localhost:3200/api/search \
 ```
 
 Expected: at least one line with `traceID`, `rootTraceName`
-(e.g. `GET /create`), `rootServiceName` = `listings-api`.
+(e.g. `http_server / GET /listings`), `rootServiceName` = `listings-api`.
 
 If empty, check whether the app is actually exporting:
 
@@ -90,11 +89,23 @@ grep -i "otel\|otlp\|exporter\|trace" <tp1-app.log> 2>/dev/null | tail -10 || \
 
 ## 4) Logs — app (file) → Promtail → Loki
 
+> Two ways to prove Loki stores and returns a stream:
+> - (a) **before the app is wired** (Step 2): push a single line through the
+>   Loki **push API** below — the simplest proof the backend works.
+> - (b) **after the app is wired** (Step 5): query the `service="listings-api"`
+>   stream the app's file appender feeds Promtail.
+
 ```bash
-# Check that Promtail is running and watching
+# (a) Push ONE synthetic line straight to Loki (no app required):
+curl -s -o /dev/null -w "loki-push:%{http_code}\n" \
+  -X POST http://localhost:3100/loki/api/v1/push \
+  -H "Content-Type: application/json" \
+  -d '{"streams":[{"stream":{"service":"listings-api","level":"INFO"},
+       "values":[["1700000000000000000","TP2 Step 2 sanity line"]]}]}'
+
+# (b) Query Loki for any line with service=listings-api (Step 5 stream):
 docker logs --tail 20 mon-promtail 2>&1 | grep -i "tailer\|new\|watch"
 
-# Query Loki for any line with service=listings-api
 curl -s 'http://localhost:3100/loki/api/v1/query_range' \
   --data-urlencode "query={service=\"listings-api\"}" \
   --data-urlencode "direction=BACKWARD" \
@@ -110,38 +121,42 @@ for s in d:
 '
 ```
 
-Expected: >= 1 stream labelled `service=listings-api`, with log
-lines matching what the app printed in the terminal.
+Expected: >= 1 stream labelled `service=listings-api` (the synthetic push line
+in (a) is guaranteed; the app stream in (b) appears once Step 5 is done).
 
-If **empty**, the app has not written to the shared `logs/listings.log`.
-Verify:
+If **empty**, the app has not written to the shared log volume
+(`/listings-logs/listings.log`). Verify:
 
 ```bash
-ls -la logs/
-tail -5 logs/listings.log 2>/dev/null || echo "file missing - not yet instrumented"
-docker logs mon-promtail 2>&1 | tail -10
+docker compose \
+  --project-name monitoring-tp exec -T mon-promtail sh \
+  -c "ls -l /listings-logs && tail -5 /listings-logs/listings.log" \
+  || echo "file missing - not yet instrumented"
+docker logs --tail 20 mon-promtail 2>&1
 ```
 
 ---
 
-## 5) Grafana dashboard (starter)
+## 5) Grafana dashboards (you build them)
 
-Open <http://localhost:3000> with `admin`/`admin`. You should see a
-folder **"Listings TP"** containing the **3-pillars starter dashboard**:
+> **No starter dashboard JSON ships in this repo** — you create the dashboards
+> as part of exercise.md **Step 6** ("Dashboards & alerts"). The `providers.yml`
+> only configures the "Listings TP" **folder** and the datasource wiring.
 
-- Panel "Requests / Errors / p95 latency / JVM heap" (metrics, from Prometheus)
-- Panel "Logs (listings-api)" (logs, from Loki)
-- Panel "Traces" (traces, from Tempo)
+Open <http://localhost:3000> with `admin`/`admin`. In **Step 6** you will
+create one dashboard in the "Listings TP" folder with panels for:
+request rate, p95 latency, error rate (Prometheus); a logs panel (Loki); and
+a traces panel (Tempo).
 
-Generate traffic again (Section 2) and refresh the dashboard: the
-"Requests" panel should start showing time series.
-
-- To **build your own panel**, use Data source picker (Prometheus / Loki / Tempo)
-  and any expression (PromQL / LogQL / TraceQL). See exercise.md Step 5.
+Build each panel with the **Data source picker** (Prometheus / Loki / Tempo)
+and an expression (PromQL / LogQL / TraceQL). See exercise.md **Step 6**.
 
 ---
 
 ## 6) Alerts — Prometheus rules
+
+These rules are the ones **you author in Step 6** (`prometheus/rules.yml`),
+named `ApiDown`, `ApiHighErrorRate`, `ApiSlow`.
 
 ```bash
 # List loaded alert rules + state
@@ -154,23 +169,25 @@ for g in d:
 '
 ```
 
-Expected: 3 scaffold rules in `listings-api-alerts`:
-`ApiHighErrorRate`, `ApiSlow`, `ApiDown`.
+Expected: the **3 rules you wrote** in `listings-api` (or a group of your
+choosing): **`ApiDown`**, **`ApiHighErrorRate`**, **`ApiSlow`**.
 
-To **force a firing** during the lab:
+To **prove one fires** during the lab (the easiest is `ApiDown`):
 
 ```bash
-# Trigger a real 500 from the app (if TP1 has a /internal/fail endpoint)
-# or generate enough traffic so a rule fires.
-# Then the rule's `state` will move: pending -> firing
-# and the alert will appear in Prometheus UI: Alerts/Active.
+# Stop the target -> the scrape goes down -> `up{job="listings-api"}` == 0
+cd ../springboot && docker compose stop listings-api
+# Wait for the rule's `for:` (e.g. 1m) + ~30s, then check the state:
+sleep 90
+curl -s http://localhost:9090/api/v1/rules | python3 -m json.tool | grep -A1 ApiDown
+
+# Restore the app:
+docker compose start listings-api
 ```
 
 ---
 
-## 7) Clean state
+## 7) Stop
 
-```bash
-docker compose down          # keep data
-docker compose down -v       # wipe
-```
+Use the runbook in `../README.md` → "Stop" (`docker compose down` to keep data,
+`docker compose down -v` to wipe and re-import the provision on next start).

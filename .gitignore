@@ -1,9 +1,9 @@
 # ------------------------------------------------------------------
-#  TP Monitoring - .gitignore
+#  TP Monitoring / Observability — .gitignore
 # ------------------------------------------------------------------
 
-# Shared log sink: the Spring Boot app writes logs/listings.log at runtime
-logs/*.log
+# The app's log file now lives on the shared `middleware-logs` volume,
+# not in this tree — nothing to ignore for logs anymore.
 
 # Local data / secrets / editors
 *.log
@@ -18,6 +18,10 @@ logs/*.log
 .idea/
 .vscode/
 *.iml
+
+# Ad-hoc scratch / shell-redirect output (e.g. `docker compose ... 2> err.txt`)
+/err*.txt
+/out*.txt
 
 # OS
 .DS_Store

@@ -1,31 +1,40 @@
 # =====================================================================
-#  TP Monitoring / Observability - middleware stack
+#  TP Monitoring / Observability — attaches to the SHARED `middleware`
+#  network (base: ../springboot/docker-compose.yml, which runs
+#  listings-api + listings-postgres). This project adds the three
+#  pillars + their front-ends:
+#       - prometheus  host 9090   (metrics)   scrapes listings-api:8080
+#       - loki        host 3100   (logs)
+#       - tempo       host 3200   (traces)
+#       - otel-collect host 4317/4318 (receives OTLP from the app)
+#       - promtail                 (tails the shared log -> Loki)
+#       - grafana     host 3000   (UI over all three)
 #
-#  The TP1 Spring Boot app (../springboot) runs on the HOST and is
-#  instrumented (see exercise.md) to push:
-#     - metrics  (scraped by Prometheus from /actuator/prometheus)
-#     - traces   (pushed via OTLP gRPC to the Collector -> Tempo)
-#     - logs     (written to a shared file, tailed by promtail -> Loki)
+#  How it reaches the app (all over the `middleware` network):
+#    * Prometheus   -> scrape target `listings-api:8080` (see
+#      ../monitoring/prometheus/prometheus.yml).
+#    * App -> Tempo  -> app pushes OTLP gRPC to `otel-collector:4317`
+#      (set in the app, see README "Run"). We relay to `tempo:4317`.
+#    * App -> Loki   -> app writes /listings-logs/listings.log on the
+#      shared volume `middleware-logs`; Promtail tails that same volume.
+#    * Services find each other by `container_name`.
 #
-#  Start  : docker compose up -d
-#  Health : docker compose ps
-#  Stop   : docker compose down          (data kept)
-#  Reset  : docker compose down -v       (wipes time series + logs + traces)
+#  BEFORE YOU RUN: read "Run" in ../monitoring/README.md — it lists the
+#  small additions to make in ../springboot/docker-compose.yml (OTLP env
+#  + the shared log volume). The exact snippet is at the bottom of this file.
 #
-#  Host ports:
-#     Grafana      3000
-#     Prometheus   9090
-#     Loki         3100
-#     Tempo        3200
-#     Collector    4317  (OTLP gRPC - app pushes here)
-#     Collector    4318  (OTLP HTTP)
+#  Run order:
+#      $ cd ../springboot && docker compose up -d    # API on 8080, writes log
+#      $ cd ../monitoring && docker compose up -d    # the observability stack
+#  Health (API) : curl -fsS http://localhost:8080/actuator/health
+#  Stack        : curl -fsS http://localhost:9090/-/healthy ; .../3100/ready
 # =====================================================================
 
-name: monitoring-listings-tp
+name: monitoring-tp
 
 networks:
-  mon-net:
-    driver: bridge
+  middleware:
+    name: middleware        # SAME global network the base project creates
 
 volumes:
   prom-data:
@@ -33,13 +42,12 @@ volumes:
   tempo-data:
   promtail-positions:
   grafana-data:
+  middleware-logs:
+    name: middleware-logs   # shared with the app (see base file snippet)
 
 services:
 
-  # ------------------------------------------------------------------
-  #  Prometheus 2.53 - metrics store
-  #  Scrapes the Spring Boot app (host) at /actuator/prometheus.
-  # ------------------------------------------------------------------
+  # ---------------- Prometheus (metrics) ----------------
   prometheus:
     image: prom/prometheus:v2.53.1
     container_name: mon-prometheus
@@ -63,11 +71,9 @@ services:
       timeout: 5s
       retries: 8
       start_period: 10s
-    networks: [mon-net]
+    networks: [middleware]
 
-  # ------------------------------------------------------------------
-  #  Loki 2.9.9 - log store
-  # ------------------------------------------------------------------
+  # ---------------- Loki (logs) ----------------
   loki:
     image: grafana/loki:2.9.9
     container_name: mon-loki
@@ -83,17 +89,15 @@ services:
       timeout: 5s
       retries: 8
       start_period: 10s
-    networks: [mon-net]
+    networks: [middleware]
 
-  # ------------------------------------------------------------------
-  #  Tempo 2.6.1 - distributed tracing store
-  # ------------------------------------------------------------------
+  # ---------------- Tempo (traces) ----------------
   tempo:
     image: grafana/tempo:2.6.1
     container_name: mon-tempo
     command: ["-config.file=/etc/tempo/tempo.yaml"]
     ports:
-      - "3200:3200"   # query API + HTTP span search
+      - "3200:3200"
     volumes:
       - ./tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
       - tempo-data:/var/tempo
@@ -103,32 +107,24 @@ services:
       timeout: 5s
       retries: 8
       start_period: 10s
-    networks: [mon-net]
+    networks: [middleware]
 
-  # ------------------------------------------------------------------
-  #  OpenTelemetry Collector contrib 0.108 - traces pipeline
-  #  Receives OTLP gRPC from the instrumented Spring Boot app;
-  #  exports the spans to Tempo.
-  # ------------------------------------------------------------------
+  # ---------------- OpenTelemetry Collector (traces pipeline) ----------------
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.108.0
     container_name: mon-otel-collector
     command: ["--config=/etc/otel/collector-config.yaml"]
     ports:
-      - "4317:4317"   # OTLP gRPC (app pushes here)
-      - "4318:4318"   # OTLP HTTP
+      - "4317:4317"    # OTLP gRPC (the app pushes here, from the network)
+      - "4318:4318"    # OTLP HTTP
     volumes:
       - ./otel/collector-config.yaml:/etc/otel/collector-config.yaml:ro
     depends_on:
       tempo:
         condition: service_healthy
-    networks: [mon-net]
+    networks: [middleware]
 
-  # ------------------------------------------------------------------
-  #  Promtail 2.9.9 - log shipper
-  #  Tails the shared log file written by the Spring Boot app and
-  #  ships the lines to Loki (labelled with `service`).
-  # ------------------------------------------------------------------
+  # ---------------- Promtail (log shipper) ----------------
   promtail:
     image: grafana/promtail:2.9.9
     container_name: mon-promtail
@@ -136,19 +132,16 @@ services:
       - "-config.file=/etc/promtail/config.yml"
       - "-log.level=info"
     volumes:
-      - ./logs:/var/logs:ro
+      # The SAME shared volume the app writes to (see base / README snippet).
+      - middleware-logs:/listings-logs:ro
       - ./promtail/promtail-config.yaml:/etc/promtail/config.yml:ro
       - promtail-positions:/positions
     depends_on:
       loki:
         condition: service_healthy
-    networks: [mon-net]
+    networks: [middleware]
 
-  # ------------------------------------------------------------------
-  #  Grafana 11.1 - unified dashboard UI
-  #  Data sources (Prometheus, Loki, Tempo) are auto-provisioned from
-  #  ./grafana/provisioning/datasources.
-  # ------------------------------------------------------------------
+  # ---------------- Grafana (UI) ----------------
   grafana:
     image: grafana/grafana:11.1.0
     container_name: mon-grafana
@@ -165,16 +158,36 @@ services:
       - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
       - grafana-data:/var/lib/grafana
     depends_on:
-      prometheus:
-        condition: service_healthy
-      loki:
-        condition: service_healthy
-      tempo:
-        condition: service_healthy
+      prometheus: { condition: service_healthy }
+      loki:       { condition: service_healthy }
+      tempo:      { condition: service_healthy }
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/api/health"]
       interval: 15s
       timeout: 5s
       retries: 10
       start_period: 20s
-    networks: [mon-net]
+    networks: [middleware]
+
+# =====================================================================
+#  REQUIRED EDITS in ../springboot/docker-compose.yml  (see README "Run")
+#
+#  In the `listings-api` service, add to `environment`:
+#      # push OTLP gRPC to the collector over the network name (not localhost)
+#      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+#      OTEL_SERVICE_NAME: "listings-api"
+#      # write the shared log file that Promtail tails
+#      LOG_FILE: "/listings-logs/listings.log"
+#
+#  and add to `services.listings-api`:
+#      volumes:
+#        - middleware-logs:/listings-logs
+#
+#  and declare the shared volume once at the top level of that base file:
+#      volumes:
+#        middleware-logs:
+#          name: middleware-logs
+#
+#  The API stays published on host 8080 for this TP (Prometheus scrapes
+#  listings-api:8080 over the network).
+# =====================================================================

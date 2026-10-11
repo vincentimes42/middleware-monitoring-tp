@@ -4,18 +4,19 @@
 #  GOAL (Step 3): make Prometheus SCRAPE the listings API and store its
 #  metrics in the TSDB, so you can build panels and alerts.
 #
-#  The app (TP1) is on the HOST at port 8081 and exposes:
-#      http://localhost:8081/actuator/prometheus
+#  The app (TP1) runs on the SHARED `middleware` network (see
+#  ../springboot/docker-compose.yml) as the service/container `listings-api`,
+#  listening on port 8080. From inside Prometheus it is reached by network
+#  name, so the scrape target is simply:
+#      listings-api:8080   -> http://listings-api:8080/actuator/prometheus
 #
-#  Because Prometheus is in Docker, it must reach the host through the
-#  gateway. See `extra_hosts` in docker-compose.yml - it maps
-#  `host.docker.internal` to the host machine.
+#  (No host.docker.internal: the app is a container on this network.)
 #
 #  The config below BOOTS cleanly with only the self-scrape.
 #  In STEP 3 you add a **scrape job** for the listings API:
 #      - job_name: "listings-api"
 #      - metrics_path: "/actuator/prometheus"
-#      - targets: ["host.docker.internal:8081"]
+#      - targets: ["listings-api:8080"]
 #      - labels: service = "listings-api"
 # =====================================================================
 
@@ -35,10 +36,10 @@ scrape_configs:
       - targets: ["localhost:9090"]
 
   # STEP 3 (student): add the listings-api scrape job HERE.
-  # Example SHAPe:
+  # Example SHAPe (target the container on the shared network):
   # - job_name: "listings-api"
   #   metrics_path: "/actuator/prometheus"
   #   static_configs:
-  #     - targets: ["host.docker.internal:8081"]
+  #     - targets: ["listings-api:8080"]
   #       labels:
   #         service: "listings-api"

@@ -1,4 +1,4 @@
-# TP Monitoring / Observability — identity stack
+# TP Monitoring / Observability
 
 Follow-up to the Spring Boot TP (TP1, `../springboot/`): we **reuse the
 TP1 listings API** and wire it into a **full observability stack** so every
@@ -21,64 +21,94 @@ What you are given vs what you build:
 The **reference solutions** are **not in this repo** — they live in
 `../../solutions/monitoring/` (supervisor use only).
 
----
+## How the pieces fit (one shared network)
+
+Like the Keycloak TP, this is **two Docker Compose projects on ONE shared
+network** (`middleware`, created by the base in `../springboot/docker-compose.yml`):
+
+| Project | Folder | Services | Host ports |
+|---|---|---|---|
+| base | `../springboot` | `listings-api`, `listings-postgres` | API `8080`, pg `5435` |
+| this | `monitoring` | `prometheus`, `loki`, `tempo`, `otel-collector`, `promtail`, `grafana` | `9090/3100/3200/4317/4318/3000` |
+
+The app is on **8080** for this TP (and for every TP — even the Keycloak one,
+where Keycloak itself takes `8081`). Services discover each other by
+**container name** over the shared network:
+
+- **Prometheus** scrapes the app at `listings-api:8080` (Step 3).
+- **The app** pushes OTLP gRPC to `otel-collector:4317` (Step 4).
+- **Promtail** tails the log file on the shared volume `middleware-logs`
+  (Step 5) — the app writes it there (see "required base edit" below).
+- **The Collector** relays spans to `tempo:4317` (Step 4).
 
 ## Prerequisites
 
 - Docker + Docker Compose (`docker compose version`)
-- JDK 17 or later + Maven 3.9+ (already installed for TP1)
-- Ports available on the host:
-  - `3000` Grafana · `9090` Prometheus · `3100` Loki · `3200` Tempo
-  - `4317` / `4318` OTel Collector (OTLP gRPC / HTTP) — the app pushes here
-  - `8081` — the Spring Boot app
+- JDK 27 + Maven 3.9+ (already installed for TP1)
+- Ports free on the host: `3000` Grafana · `9090` Prometheus · `3100` Loki ·
+  `3200` Tempo · `4317/4318` Collector · `8080` the API · `5435` the API's Postgres
 
-> **Tip:** this TP is one of two follow-ups after TP1. The other is
-> [TP Keycloak](../keycloak/). They both use port `3000`, so **do not run
-> them at the same time**.
+> **Tip:** Keycloak and Monitoring are **alternatives** — both start the base
+> `listings-api` (same container name), so run **one** at a time.
 
 ## Run
 
-### 1) The backend stack (boots as-is)
+### 0) Required base edit — `../springboot/docker-compose.yml`
+
+So the app pushes traces to the collector and writes the shared log file, add
+to the `listings-api` service's `environment` (the `LOG_FILE` env and the
+`listings-logs` volume already exist in the base):
+
+```yaml
+  listings-api:
+    environment:
+      # push traces to the collector over the shared network name (not localhost)
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+      OTEL_SERVICE_NAME: "listings-api"
+      # (already present in the base) LOG_FILE: "/listings-logs/listings.log"
+```
+
+### 1) Start the base (the API + its Postgres)
+
+```bash
+cd ../springboot
+docker compose up -d
+curl -fsS http://localhost:8080/actuator/health     # API on 8080
+```
+
+### 2) Start the observability stack (this folder)
 
 ```bash
 cd monitoring
 docker compose up -d
-docker compose ps          # all 6 up
+docker compose ps          # all 6 up + healthy
 ```
 
-```bash
-# backend readiness (no auth needed)
-curl -fsS http://localhost:9090/-/healthy
-curl -fsS http://localhost:3100/ready
-curl -fsS http://localhost:3200/ready
-# Grafana
-curl -fsS http://localhost:3000/api/health
-```
-
-- Grafana <http://localhost:3000> (`admin` / `admin`)
-- Prometheus <http://localhost:9090> — Loki <http://localhost:3100> — Tempo <http://localhost:3200>
+Backend readiness + Grafana/Prometheus/Loki/Tempo URLs are checked in
+[`docs/verification.md` §1](docs/verification.md).
 
 At this point the stack is **empty**: the three pipelines are **scaffolds**
 you complete in Steps 3-6 (see `exercise.md`).
 
-### 2) Instrument the API (TP1) — the real work
+### 3) Instrument the API (TP1) — the real work
 
-The instrumentation is **code in TP1** (not an agent). In `../springboot`:
+The instrumentation is **code in TP1** (`../springboot`), not an agent:
 
 - add the metrics + tracing dependencies (Step 3 & 4);
 - expose `/actuator/prometheus` and record a business metric (Step 3);
-- enable an OTel OTLP exporter to `localhost:4317` + one span (Step 4);
-- add a Logback **file appender** to `logs/listings.log` (Step 5);
-- run on port **8081**: `mvn spring-boot:run` (or `java -jar`).
+- enable the OTel OTLP exporter to `otel-collector:4317` + one span (Step 4);
+- add a Logback **file appender** to `${LOG_FILE}` =
+  `/listings-logs/listings.log` (the shared volume Promtail tails) in Step 5.
 
-Then generate traffic (`GET /listings`, `POST /listings`) — that is what the
-three pipelines observe.
+`docker compose restart listings-api` (from `../springboot`) to pick up
+changes. Then generate traffic (`GET /listings`) — that is what the three
+pipelines observe.
 
-### 3) Stop
+### 4) Stop
 
 ```bash
-docker compose down        # keep data
-docker compose down -v     # wipe metrics, traces, logs
+cd monitoring   && docker compose down        # keep data
+cd ../springboot && docker compose down       # stop base (add -v to wipe DB)
 ```
 
 ## Tree
@@ -86,7 +116,7 @@ docker compose down -v     # wipe metrics, traces, logs
 ```
 monitoring/
 ├── .gitignore
-├── docker-compose.yml       # 6 services: prom, loki, tempo, collector, promtail, grafana
+├── docker-compose.yml       # 6 backend services, attached to the shared `middleware`
 ├── prometheus/
 │   ├── prometheus.yml        # SCAFFOLD — you add the listings-api scrape job (Step 3)
 │   └── rules.yml             # SCAFFOLD — you add the alert rules (Step 6)
@@ -98,7 +128,6 @@ monitoring/
 │   └── provisioning/datasources/datasources.yml  # SCAFFOLD — you add Loki+Tempo (Step 5/6)
 ├── loki/loki-config.yaml     # store (fixed) — file storage
 ├── tempo/tempo.yaml          # store (fixed) — file storage + OTLP receiver
-├── logs/                     # SHARED SINK — the app writes listings.log here (gitignored)
 ├── docs/verification.md      # live per-pillar check + copy-paste curl
 ├── README.md                 # this file
 └── exercise.md               # the statement (8h, core 1-6 + bonus 7-8 + delivery 9)

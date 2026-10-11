@@ -1,24 +1,25 @@
 # =====================================================================
 #  Grafana data sources - TP Monitoring
 #
-#  GOAL (Step 5 / 6): connect Grafana to the three backends so you can build
-#  panels and queries.
+#  GOAL (Steps 4 & 5): connect Grafana to the two extra backends so you can
+#  build panels and queries against ALL THREE pillars.
 #
 #  The file below BOOTS with the Prometheus data source pre-created
-#  (it is the default, so Step 3's metrics panel already has a target).
+#  (it is the default, so Step 3's metrics already have a target).
 #
-#  In STEP 5 you add the two missing data sources:
-#      - Loki  -> type: loki,    url: http://loki:3100
-#      - Tempo -> type: tempo,  url: http://tempo:3200
+#  Each pipeline step adds ITS OWN data source here (or in the Grafana UI):
+#      - Step 4 (traces): add Tempo -> type: tempo,  url: http://tempo:3200
+#      - Step 5 (logs)  : add Loki  -> type: loki,   url: http://loki:3100
 #
 #  Each source needs: name, uid, type, access (proxy), url.
-#  (You can also add them by hand in the Grafana UI - "Add data source".)
+#  (Adding them by hand in the Grafana UI - "Add data source" - is equally fine;
+#   the panel / dashboard then works the same way.)
 # =====================================================================
 
 apiVersion: 1
 
 datasources:
-  # Pre-created (default) - metrics target for Step 3/6.
+  # Pre-created (default) - metrics target for Step 3.
   - name: Prometheus
     uid: prometheus
     type: prometheus
@@ -29,14 +30,16 @@ datasources:
       timeInterval: 10s
       httpMethod: POST
 
-  # STEP 5 (student): add Loki and Tempo here, e.g.:
-  # - name: Loki
-  #   uid: loki
-  #   type: loki
-  #   access: proxy
-  #   url: http://loki:3100
+  # STEP 4 (student): add the Tempo data source here (or in the Grafana UI), e.g.:
   # - name: Tempo
   #   uid: tempo
   #   type: tempo
   #   access: proxy
   #   url: http://tempo:3200
+
+  # STEP 5 (student): add the Loki data source here (or in the Grafana UI), e.g.:
+  # - name: Loki
+  #   uid: loki
+  #   type: loki
+  #   access: proxy
+  #   url: http://loki:3100

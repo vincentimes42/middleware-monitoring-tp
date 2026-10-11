@@ -4,8 +4,9 @@
 #  GOAL (Step 5): make Promtail TAIL the app's log file and SHIP the lines
 #  to Loki, labelled so you can query them by `service` and `level`.
 #
-#  The app (TP1) will write its logs to:  /var/logs/listings.log
-#  (see docker-compose: ./logs is bind-mounted to /var/logs in this service).
+#  The app (TP1) writes its logs to the shared network volume at
+#  /listings-logs/listings.log (see LOG_FILE in ../springboot/docker-compose.yml
+#  and its `listings-logs` volume, which Promtail mounts read-only here).
 #  Loki push API:  http://loki:3100/loki/api/v1/push
 #
 #  The config below BOOTS cleanly (client present + one no-op job). In
@@ -41,7 +42,7 @@ scrape_configs:
   #         job: listings
   #         service: listings-api
   #         environment: tp
-  #         __path__: /var/logs/listings.log
+  #         __path__: /listings-logs/listings.log
   #   pipeline_stages:
   #     - regex:
   #         expression: '^(?P<ts>\S+) (?P<level>[A-Z]+) '
