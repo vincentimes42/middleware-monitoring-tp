@@ -1,0 +1,43 @@
+# =====================================================================
+#  OpenTelemetry Collector - TP Monitoring
+#
+#  GOAL (Step 4): make the Collector ACCEPT spans (OTLP) from the app and
+#  DELIVER them to Tempo.
+#
+#  The app pushes OTLP over gRPC to `localhost:4317` (host-published).
+#  Tempo listens for OTLP gRPC on port 4317 (it is reachable as host `tempo`).
+#
+#  The config below BOOTS (OTLP receiver + a `debug` sink), so the stack is
+#  up before you wire it. STEP 4: add a `otlp/tempo` EXPORTER and point the
+#  traces pipeline at it (instead of / in addition to `debug`).
+#
+#  The 4 required sections are: receivers, processors, exporters, service.
+# =====================================================================
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:4317"
+      http:
+        endpoint: "0.0.0.0:4318"
+
+processors:
+  batch: {}
+  memory_limiter:
+    check_interval: 500ms
+    limit_mib: 512
+    spike_limit_mib: 128
+
+exporters:
+  # Baseline sink (works out of the box). Replace / supplement this in Step 4.
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      # STEP 4 (student): export to Tempo, e.g. exporters: [otlp/tempo]
+      exporters: [debug]

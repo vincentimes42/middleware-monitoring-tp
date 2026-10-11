@@ -1,0 +1,36 @@
+# =====================================================================
+#  Prometheus - TP Monitoring (alert rules)
+#
+#  GOAL (Step 6): write the alert rules for the listings API.
+#
+#  A rule needs: alert (name), expr (a PromQL expression), for (duration),
+#  and optionally labels/annotations.
+#
+#  The config below BOOTS (no rules yet). In STEP 6 you add at least the
+#  three "golden signal" rules for service "listings-api":
+#      1. high 5xx error rate   (based on http_server_requests_seconds_count)
+#      2. high p95 latency      (based on http_server_requests_seconds_bucket)
+#      3. app down              (based on the `up` metric of the listings-api job)
+#
+#  Example SHAPe (values are yours):
+#  groups:
+#    - name: listings-api-alerts
+#      rules:
+#        - alert: ApiDown
+#          expr: up{job="listings-api"} == 0
+#          for: 2m
+#          labels: { severity: critical }
+#          annotations:
+#            summary: "listings-api is down"
+# =====================================================================
+
+# STEP 6 (student): add your alert rules below (see the SHAPe in the comments
+# above). Example:
+#   rules:
+#     - alert: ApiDown
+#       expr: up{job="listings-api"} == 0
+#       for: 2m
+#       labels:
+#         severity: critical
+#       annotations:
+#         summary: "listings-api is down"

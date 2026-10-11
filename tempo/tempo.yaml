@@ -1,0 +1,29 @@
+# =====================================================================
+#  Tempo — TP Monitoring
+# ---------------------------------------------------------------------
+#  Minimal single-binary config for grafana/tempo:2.6.1.
+#    - OTLP gRPC receiver on :4317   (from the Collector)
+#    - HTTP query API on :3200        (TraceQL / TraceID)
+#    - local file storage
+# =====================================================================
+
+server:
+  http_listen_port: 3200
+  log_level: info
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: "0.0.0.0:4317"
+        http:
+          endpoint: "0.0.0.0:4318"
+
+storage:
+  trace:
+    backend: local
+    local:
+      path: /var/tempo/traces
+    wal:
+      path: /var/tempo/wal

@@ -1,0 +1,42 @@
+# =====================================================================
+#  Grafana data sources - TP Monitoring
+#
+#  GOAL (Step 5 / 6): connect Grafana to the three backends so you can build
+#  panels and queries.
+#
+#  The file below BOOTS with the Prometheus data source pre-created
+#  (it is the default, so Step 3's metrics panel already has a target).
+#
+#  In STEP 5 you add the two missing data sources:
+#      - Loki  -> type: loki,    url: http://loki:3100
+#      - Tempo -> type: tempo,  url: http://tempo:3200
+#
+#  Each source needs: name, uid, type, access (proxy), url.
+#  (You can also add them by hand in the Grafana UI - "Add data source".)
+# =====================================================================
+
+apiVersion: 1
+
+datasources:
+  # Pre-created (default) - metrics target for Step 3/6.
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      timeInterval: 10s
+      httpMethod: POST
+
+  # STEP 5 (student): add Loki and Tempo here, e.g.:
+  # - name: Loki
+  #   uid: loki
+  #   type: loki
+  #   access: proxy
+  #   url: http://loki:3100
+  # - name: Tempo
+  #   uid: tempo
+  #   type: tempo
+  #   access: proxy
+  #   url: http://tempo:3200

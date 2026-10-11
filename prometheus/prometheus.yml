@@ -1,0 +1,44 @@
+# =====================================================================
+#  Prometheus - TP Monitoring
+#
+#  GOAL (Step 3): make Prometheus SCRAPE the listings API and store its
+#  metrics in the TSDB, so you can build panels and alerts.
+#
+#  The app (TP1) is on the HOST at port 8081 and exposes:
+#      http://localhost:8081/actuator/prometheus
+#
+#  Because Prometheus is in Docker, it must reach the host through the
+#  gateway. See `extra_hosts` in docker-compose.yml - it maps
+#  `host.docker.internal` to the host machine.
+#
+#  The config below BOOTS cleanly with only the self-scrape.
+#  In STEP 3 you add a **scrape job** for the listings API:
+#      - job_name: "listings-api"
+#      - metrics_path: "/actuator/prometheus"
+#      - targets: ["host.docker.internal:8081"]
+#      - labels: service = "listings-api"
+# =====================================================================
+
+global:
+  scrape_interval: 10s
+  evaluation_interval: 10s
+  external_labels:
+    environment: tp-monitoring
+
+rule_files:
+  - "rules.yml"
+
+scrape_configs:
+  # self-scrape (keeps Prometheus healthy even before the app is wired)
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # STEP 3 (student): add the listings-api scrape job HERE.
+  # Example SHAPe:
+  # - job_name: "listings-api"
+  #   metrics_path: "/actuator/prometheus"
+  #   static_configs:
+  #     - targets: ["host.docker.internal:8081"]
+  #       labels:
+  #         service: "listings-api"

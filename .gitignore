@@ -1,0 +1,23 @@
+# ------------------------------------------------------------------
+#  TP Monitoring - .gitignore
+# ------------------------------------------------------------------
+
+# Shared log sink: the Spring Boot app writes logs/listings.log at runtime
+logs/*.log
+
+# Local data / secrets / editors
+*.log
+*.env
+.env
+.env.*
+*.local
+*.sqlite
+*.db
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store

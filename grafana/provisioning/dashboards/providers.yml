@@ -1,0 +1,17 @@
+# =====================================================================
+#  Grafana dashboard provider — auto-provisioned (TP Monitoring)
+#  Loads every .json in the dashboards/ folder at startup.
+# =====================================================================
+
+apiVersion: 1
+
+providers:
+  - name: default
+    folder: "Listings TP"
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: false

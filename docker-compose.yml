@@ -1,0 +1,180 @@
+# =====================================================================
+#  TP Monitoring / Observability - middleware stack
+#
+#  The TP1 Spring Boot app (../springboot) runs on the HOST and is
+#  instrumented (see exercise.md) to push:
+#     - metrics  (scraped by Prometheus from /actuator/prometheus)
+#     - traces   (pushed via OTLP gRPC to the Collector -> Tempo)
+#     - logs     (written to a shared file, tailed by promtail -> Loki)
+#
+#  Start  : docker compose up -d
+#  Health : docker compose ps
+#  Stop   : docker compose down          (data kept)
+#  Reset  : docker compose down -v       (wipes time series + logs + traces)
+#
+#  Host ports:
+#     Grafana      3000
+#     Prometheus   9090
+#     Loki         3100
+#     Tempo        3200
+#     Collector    4317  (OTLP gRPC - app pushes here)
+#     Collector    4318  (OTLP HTTP)
+# =====================================================================
+
+name: monitoring-listings-tp
+
+networks:
+  mon-net:
+    driver: bridge
+
+volumes:
+  prom-data:
+  loki-data:
+  tempo-data:
+  promtail-positions:
+  grafana-data:
+
+services:
+
+  # ------------------------------------------------------------------
+  #  Prometheus 2.53 - metrics store
+  #  Scrapes the Spring Boot app (host) at /actuator/prometheus.
+  # ------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.53.1
+    container_name: mon-prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=24h"
+      - "--web.enable-lifecycle"
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules.yml:/etc/prometheus/rules.yml:ro
+      - prom-data:/prometheus
+    extra_hosts:
+      # Lets Prometheus reach the host where the Spring Boot app runs (8081)
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+      start_period: 10s
+    networks: [mon-net]
+
+  # ------------------------------------------------------------------
+  #  Loki 2.9.9 - log store
+  # ------------------------------------------------------------------
+  loki:
+    image: grafana/loki:2.9.9
+    container_name: mon-loki
+    command: ["-config.file=/etc/loki/loki-config.yaml"]
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+      - loki-data:/loki
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3100/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+      start_period: 10s
+    networks: [mon-net]
+
+  # ------------------------------------------------------------------
+  #  Tempo 2.6.1 - distributed tracing store
+  # ------------------------------------------------------------------
+  tempo:
+    image: grafana/tempo:2.6.1
+    container_name: mon-tempo
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    ports:
+      - "3200:3200"   # query API + HTTP span search
+    volumes:
+      - ./tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3200/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+      start_period: 10s
+    networks: [mon-net]
+
+  # ------------------------------------------------------------------
+  #  OpenTelemetry Collector contrib 0.108 - traces pipeline
+  #  Receives OTLP gRPC from the instrumented Spring Boot app;
+  #  exports the spans to Tempo.
+  # ------------------------------------------------------------------
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.108.0
+    container_name: mon-otel-collector
+    command: ["--config=/etc/otel/collector-config.yaml"]
+    ports:
+      - "4317:4317"   # OTLP gRPC (app pushes here)
+      - "4318:4318"   # OTLP HTTP
+    volumes:
+      - ./otel/collector-config.yaml:/etc/otel/collector-config.yaml:ro
+    depends_on:
+      tempo:
+        condition: service_healthy
+    networks: [mon-net]
+
+  # ------------------------------------------------------------------
+  #  Promtail 2.9.9 - log shipper
+  #  Tails the shared log file written by the Spring Boot app and
+  #  ships the lines to Loki (labelled with `service`).
+  # ------------------------------------------------------------------
+  promtail:
+    image: grafana/promtail:2.9.9
+    container_name: mon-promtail
+    command:
+      - "-config.file=/etc/promtail/config.yml"
+      - "-log.level=info"
+    volumes:
+      - ./logs:/var/logs:ro
+      - ./promtail/promtail-config.yaml:/etc/promtail/config.yml:ro
+      - promtail-positions:/positions
+    depends_on:
+      loki:
+        condition: service_healthy
+    networks: [mon-net]
+
+  # ------------------------------------------------------------------
+  #  Grafana 11.1 - unified dashboard UI
+  #  Data sources (Prometheus, Loki, Tempo) are auto-provisioned from
+  #  ./grafana/provisioning/datasources.
+  # ------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:11.1.0
+    container_name: mon-grafana
+    environment:
+      # Demo credentials (academic TP - not for production)
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_REPORTING_BACKGROUND_ENABLED: "false"
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      loki:
+        condition: service_healthy
+      tempo:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks: [mon-net]
