@@ -53,6 +53,15 @@ where Keycloak itself takes `8081`). Services discover each other by
 
 ## Run
 
+> **Two repos, two folders.** The TP1 repo (the Spring Boot app) and this
+> monitoring repo are **side by side** (any folder names). Set these once per
+> terminal so the commands below do not need hard-coded paths:
+>
+> ```bash
+> export TP1_DIR="/path/to/your/tps-1-repo"     # the Spring Boot app repo
+> export MON_DIR="/path/to/monitoring-repo"     # this monitoring repo
+> ```
+
 ### 0) Required base edit — `../springboot/docker-compose.yml`
 
 So the app pushes traces to the collector and writes the shared log file, add
@@ -71,7 +80,7 @@ to the `listings-api` service's `environment` (the `LOG_FILE` env and the
 ### 1) Start the base (the API + its Postgres)
 
 ```bash
-cd ../springboot
+cd "$TP1_DIR"
 docker compose up -d
 curl -fsS http://localhost:8080/actuator/health     # API on 8080
 ```
@@ -79,7 +88,7 @@ curl -fsS http://localhost:8080/actuator/health     # API on 8080
 ### 2) Start the observability stack (this folder)
 
 ```bash
-cd monitoring
+cd "$MON_DIR"
 docker compose up -d
 docker compose ps          # all 6 up + healthy
 ```
@@ -107,8 +116,8 @@ pipelines observe.
 ### 4) Stop
 
 ```bash
-cd monitoring   && docker compose down        # keep data
-cd ../springboot && docker compose down       # stop base (add -v to wipe DB)
+cd "$MON_DIR"    && docker compose down       # keep data
+cd "$TP1_DIR"    && docker compose down       # stop base (add -v to wipe DB)
 ```
 
 ## Tree

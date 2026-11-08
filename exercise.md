@@ -118,11 +118,11 @@ layer:
 | Track | Steps |
 |---|---|
 | **Core** (required — must fit in the 8h) | 1 · 2 · 3 · 4 · 5 · 6 |
-| **Bonus** (start only when the core checklists are green) | 7 (correlation & first SLO) · 8 (two services / a slow dependency) |
+| **Bonus** (start only when the core `Verify` sections are green) | 7 (correlation & first SLO) · 8 (two services / a slow dependency) |
 | **Delivery** | 9 (final integration) |
 
-Each core step's "Acceptance checklist" is your "definition of done".
-Bonus steps have their own acceptance checklists; doing them is optional
+Each core step's `Verify` section is your "definition of done".
+Bonus steps have their own `Verify` section; doing them is optional
 but counts for the grade if you deliver them.
 
 ---
@@ -189,373 +189,405 @@ suite. The three ways:
 
 ---
 
-## Step 1 - Bring up the observable stack `CORE`
+## Step 1 — Bring up the observable stack   CORE
 
-> **User story** — *As a **developer**, I want the full observability
-> middleware to be **running and reachable**, so that I can instrument the
-> API against **real backends** (Prometheus, Loki, Tempo, Grafana) in the
-> following steps.*
+**Outcome** — The six observability services (`mon-prometheus`, `mon-loki`,
+`mon-tempo`, `mon-otel-collector`, `mon-promtail`, `mon-grafana`) are **up**
+in this repo, each answering its backend health/ready endpoint. This is the
+**bootstrap**: before any app wiring, the three backends + the collector +
+the UI are reachable, and you can prove it with a `curl`.
 
-### Behavior
+### Build it
+> **Pre-req** — the **TP1 base** (`../springboot`) is up on `8080`
+> (TP1's `docker compose up`). This step only starts **this repo's** stack
+> (the six `mon-*` services).
 
-| # | Requirement |
-|---|---|
-| 1.1 | `docker compose up -d` starts **six** services, all reachable via their health endpoint. |
-| 1.2 | Grafana reports `health` green on its API. |
-| 1.3 | Prometheus, Loki and Tempo each answer their readiness endpoint. |
-| 1.4 | The OTel Collector's **OTLP gRPC** listener is reachable on host port `4317`. |
+1. **Start** the stack in this repo (`monitoring/`):
+   `cd "$MON_DIR" && docker compose up -d`.
+2. **Wait** for the services to settle (a few seconds; Promtail/Collector
+   take longer than the backends). Then **check** each health endpoint
+   (the Verify list).
+3. **If one is not ready**, tail its logs
+   (`docker compose -f <compose> logs <service>`), fix the compose / path
+   issue, and re-check.
 
-### Acceptance checklist
+### Expected behavior
+- `docker compose ps` shows **six** services, all **`Up`** (or `healthy`).
+- The four backend readiness endpoints answer (Prometheus `/-/healthy`,
+  Loki `/ready`, Tempo `/ready`, OTel Collector's OTLP gRPC listener on
+  `4317`).
+- Grafana is **up** and already has **at least one** provisioned data source
+  (the Prometheus one — the *look* of the rest comes in Step 6).
 
-- [ ] `docker compose ps` shows `mon-prometheus`, `mon-loki`, `mon-tempo`,
-      `mon-otel-collector`, `mon-promtail`, `mon-grafana` all `Up`
-- [ ] `GET http://localhost:9090/-/healthy` → `Prometheus Server is Healthy.`
-- [ ] `GET http://localhost:3100/ready` → `ready`
-- [ ] `GET http://localhost:3200/ready` → `ready`
-- [ ] Grafana at <http://localhost:3000> answers `GET /api/health` with `database: ok`
-      (login `admin` / `admin`)
-- [ ] You can open <http://localhost:3000> and Grafana is not "no data sources"
+### Verify
+- [ ] `docker compose ps` shows `mon-prometheus`, `mon-loki`, `mon-tempo`, `mon-otel-collector`, `mon-promtail`, `mon-grafana` all `Up`
+- [ ] `curl -fsS http://localhost:9090/-/healthy` → `Prometheus Server is Healthy.`
+- [ ] `curl -fsS http://localhost:3100/ready` → `ready`
+- [ ] `curl -fsS http://localhost:3200/ready` → `ready`
+- [ ] `curl -fsS http://localhost:3000/api/health -u admin:admin` → `database: ok` (Grafana up, not "no data sources")
 
-### Hints
-
-- Start in `monitoring/`: `docker compose up -d`, then `docker compose ps`.
-- `docker compose logs -f <service>` to watch a service start.
-- All health endpoints are curlable without auth — no login needed for the
-  backend readiness checks.
-
----
-
-## Step 2 - Understand the three pillars (read the backends, don't trust) `CORE`
-
-> **User story** — *As a **developer**, I want to **query each backend directly**
-> and confirm it stores and returns data, so that I **know each pipeline is
-> real** before I rely on the Grafana panels.*
-
-This step is **read-only on the backends**: you confirm that each of the three
-stores can hold and return a signal, using the *empty* stack, before wiring
-the app in.
-
-### Behavior
-
-| # | Requirement |
-|---|---|
-| 2.1 | Prometheus can **store and query** a series: query it and see its own `up` / `prometheus_...` metrics. |
-| 2.2 | Loki can **store and query** a stream: after injecting one line, `LogQL` returns it. |
-| 2.3 | Tempo can **store and return** a trace search shape: a TraceQL/HTTP search returns a valid (possibly empty) structure. |
-
-### Acceptance checklist
-
-- [ ] `curl http://localhost:9090/api/v1/query --data-urlencode "query=up"` returns
-      a JSON `result` with an `up` series (value `1`)
-- [ ] You can push one log line directly to the Loki **push API** (the one-liner in
-      `docs/verification.md` §4) and the Loki query API (`{service="listings-api"}`)
-      returns it — this proves Loki stores and returns a stream **before the app is wired**
-- [ ] A Tempo search API call (last 10 min) returns a valid JSON object with a
-      `traces` key (it may legitimately be empty)
-- [ ] You can name (in your own words) the three query languages: **PromQL**,
-      **LogQL**, **TraceQL**
-
-### Hints
-
-- Full, copy-pasteable `curl` recipes for each backend:
-  [`docs/verification.md`](docs/verification.md) §2, §4, §3.
-- Loki and Tempo "empty but valid" is the correct starting state — a stack with
-  no data still returns well-formed JSON. This is the point: **the contract is
-  real, even before the app is connected**.
+### If you are stuck
+- The exact health `curl`s: [`docs/verification.md` §1](docs/verification.md).
+- All backends answer readiness **without auth** — no login needed for these checks (only Grafana needs `admin`/`admin`).
+- `docker compose -f <compose> logs -f <service>` to watch a service start; check the port mapping if a ready endpoint times out.
 
 ---
 
-## Step 3 - Expose metrics → Prometheus → Grafana `CORE`
+## Step 2 — Understand the three pillars (read the backends, don't trust)   CORE
 
-> **User story** — *As a **platform developer**, I want the API to **expose
-> HTTP + one business metric** as Prometheus metrics, **and I want Prometheus to
-> scrape them and Grafana to show them**, so that I can build **capacity and
-> error panels** and later **alerts** on top.*
+**Outcome** — Each of the three backends **stores and returns** a signal,
+**before the app is wired in**: Prometheus returns a `PromQL` query, Loki
+returns a pushed `LogQL` stream, and Tempo returns a valid (possibly empty)
+trace search. You can **name** the three query languages. No app code is
+involved yet — this proves **each pipeline is real** on its own.
 
-This step is **split in two places** and they must both be done:
+### Build it
+> This step is **read-only on the backends**. You do **not** change any app
+> or config file — you **run `curl`** against the three backends (no Java, no
+> config edits).
 
-| Where | What to do |
-|---|---|
-| **TP1** (`../springboot`) | add the `prometheus` registry, expose `/actuator/prometheus`, record one **business** `Counter` |
-| **This repo** (`monitoring/`) | write the **Prometheus scrape job** in `prometheus/prometheus.yml` |
+1. **Query** Prometheus directly (`curl :9090/api/v1/query`) and read your own
+   `up` / `prometheus_...` series.
+2. **Push** one line to Loki's **push API**, then **query** it back with
+   `LogQL` (`{service="listings-api"}`).
+3. **Call** Tempo's search API (last 10 min) and confirm it returns a **valid
+   JSON object with a `traces` key** (it may legitimately be **empty**).
+4. **Name** (in your own words) the three query languages: **PromQL**,
+   **LogQL**, **TraceQL**.
 
-### Changes to make in the TP1 (`../springboot`)
+### Expected behavior
+- **Prometheus** can **store and query** a series — a `PromQL` query returns
+  its own `up` / `prometheus_*` metrics.
+- **Loki** can **store and query** a stream — after you push one line, the
+  `LogQL` query `returns` it.
+- **Tempo** can **store and return** a search result — a search returns a
+  **well-formed** JSON object with a `traces` key (**empty is correct** at
+  this stage).
+- "Empty but valid" is the expected starting state: a stack with **no data**
+  still returns **well-formed** JSON. **The contract is real even before the
+  app is connected.**
 
-| What | From (TP1) | To (this step) |
-|---|---|---|
-| `pom.xml` | `spring-boot-starter-actuator` present | **add** `micrometer-registry-prometheus` |
-| `application.yml` | `management.endpoints...` | ensure `/actuator/prometheus` is **exposed** + `service: listings-api` tag |
-| Business metric | (none) | record a **Counter** (e.g. `listings_created_total`) in the create path |
+### Verify
+- [ ] `curl -s http://localhost:9090/api/v1/query --data-urlencode "query=up"` returns a JSON `result` with an `up` series (value `1`)
+- [ ] Push one line to the Loki **push API** (one-liner in [`docs/verification.md` §4](docs/verification.md)) and the Loki query `{service="listings-api"}` **returns it** — proves Loki stores + returns a stream **before the app is wired**
+- [ ] A Tempo search (last 10 min) returns a valid JSON object with a `traces` key (may legitimately be **empty**)
+- [ ] You can name (in your own words) the three query languages: **PromQL**, **LogQL**, **TraceQL**
 
-### Changes to make in this repo (`monitoring/`)
+### If you are stuck
+- Full copy-pasteable `curl` recipes for each backend: [`docs/verification.md`](docs/verification.md) §2, §4, §3.
+- If Loki/Tempo return an **empty `traces`/`[]`** — that is **correct**, not a failure. You are proving the **shape** of the response, not that data exists.
 
-| File | From (skeleton) | To (this step) |
-|---|---|---|
-| `prometheus/prometheus.yml` | self-scrape only | **add** the `listings-api` scrape job (see the hint in the file) |
+---
 
-### Behavior
+## Step 3 — Expose metrics → Prometheus → Grafana   CORE
 
-| # | Requirement |
-|---|---|
-| 3.1 | `GET http://localhost:8080/actuator/prometheus` returns Prometheus **text exposition** format (`# HELP` / `# TYPE` lines). |
-| 3.2 | The default HTTP metrics (`http_server_requests_seconds_*`) are present, tagged with `service="listings-api"`, `uri=`, `status=`. |
-| 3.3 | A **business metric** `listings_created_total{service="listings-api"}` **increases by one per successful `POST /listings`**. |
-| 3.4 | Prometheus **scrapes** the app: the series are visible via the Prometheus query API (not only on the app). |
+**Outcome** — The API **exposes** HTTP metrics + **one business metric**
+(`listings_created_total`) in Prometheus text form, **Prometheus scrapes**
+them (visible via the Prometheus query API), and the series are tagged
+`service="listings-api"`. The Grafana panel for them comes in **Step 6** —
+here you only prove the scrape works by asking **Prometheus** directly.
 
-### Acceptance checklist
+### Build it
+This step is **split in two repos** — both must be done:
 
+**In the TP1 repo (`../springboot`):**
+1. **Add** `io.micrometer:micrometer-registry-prometheus` to `pom.xml`
+   (version-managed by Boot — no `<version>`).
+2. **Expose** `/actuator/prometheus` in `application.yml` (`management.endpoints
+   .web.exposure.include: …, prometheus`) and keep the existing
+   `management.metrics.tags.service: listings-api`.
+3. **Record** a **business** `Counter` in the create path:
+   `Counter.builder("listings_created_total").tag("service","listings-api")
+   .register(meterRegistry)` and **increment** it on each successful
+   `POST /listings`.
+
+**In this repo (`monitoring/`):**
+4. **Add** the `listings-api` **scrape job** in `prometheus/prometheus.yml`
+   (the skeleton already shows the exact keys). **Reload** with
+   `curl -X POST http://localhost:9090/-/reload` (or
+   `docker compose restart prometheus`).
+5. **Rebuild + restart** the app so it picks up the dependency + endpoint
+   (`cd "$TP1_DIR" && docker compose up -d --build listings-api`), then
+   generate a `POST /listings`.
+
+### Expected behavior
+- `GET http://localhost:8080/actuator/prometheus` returns Prometheus
+  **text exposition** format (`# HELP` / `# TYPE` lines).
+- The default HTTP metrics (`http_server_requests_seconds_*`) are present,
+  tagged `service="listings-api"`, `uri=`, `status=`.
+- The **business** metric `listings_created_total{service="listings-api"}`
+  **increases by one per successful `POST /listings`**.
+- **Prometheus scrapes** the app: the series are visible via the **Prometheus
+  query API** (not only on the app's actuator).
+
+### Verify
 - [ ] `curl -s http://localhost:8080/actuator/prometheus` shows `# HELP http_server_requests_seconds`
-- [ ] After 1 `POST /listings`, `listings_created_total` value is **1 higher** than before the call
-- [ ] `curl -s "http://localhost:9090/api/v1/query" --data-urlencode "query=listings_created_total{service="listings-api"}"` returns a value (i.e. **Prometheus now has the series** — the scrape job you added works)
+- [ ] After 1 `POST /listings`, `listings_created_total` is **1 higher** than before the call
+- [ ] `curl -s "http://localhost:9090/api/v1/query" --data-urlencode 'query=listings_created_total{service="listings-api"}'` returns a value (i.e. **Prometheus now has the series** — your scrape job works)
 
-### Hints
-
-- Dependency: `io.micrometer:micrometer-registry-prometheus` (version-managed by Boot).
-- In `application.yml` keep the existing `management.metrics.tags.service` and add
-  `management.endpoints.web.exposure.include: ... prometheus`.
-- A clean way to record the business counter: inject `MeterRegistry`, build
-  `Counter.builder("listings_created_total").tag("service","listings-api").register(...)`.
-- In `prometheus/prometheus.yml` you **add** the `listings-api` scrape job —
-  the skeleton already shows the exact keys to set. To reload after editing:
-  `curl -X POST http://localhost:9090/-/reload` (or `docker compose restart prometheus`).
-- (Panel-building happens in **Step 6** — here you only prove the series is scraped
-  by asking Prometheus directly, not Grafana.)
+### If you are stuck
+- The `Counter` is a **`micrometer`** object — inject `MeterRegistry`, build it once, keep a reference, and `.increment()` in the create-path service.
+- If the Prometheus query returns `[]`, the **scrape job** is the usual cause — confirm the job's `static_configs` points at `listings-api:8080` (container name, not `localhost`), then **reload**.
+- (Panel-building is **Step 6** — here you only prove the series is **scraped** by asking Prometheus directly, not Grafana.)
 
 ---
 
-## Step 4 - Wire distributed tracing → Collector → Tempo `CORE`
+## Step 4 — Wire distributed tracing → Collector → Tempo   CORE
 
-> **User story** — *As a **platform developer**, I want each request to be
-> **traced across the API**, with a span for the business operation, so that
-> I can **open any slow request in Tempo** and see *exactly which operation
-> took the time*.*
+**Outcome** — Every request is **traced**: a `POST /listings` produces a
+**business span named `listings.create`** (not only the auto HTTP span), that
+span is **stored in Tempo** (returned by `…/api/traces/<traceId>` and by a
+search), and every trace keeps a stable **`trace_id`**. You open a slow
+request in Tempo and see *exactly which operation took the time*.
 
-This step is **split in three places** and all three must be done:
+### Build it
+This step is **split in three places** — all three must be done:
 
-| Where | What to do |
-|---|---|
-| **TP1** (`../springboot`) | add tracing deps + a `Tracer` usage + an OTel SDK that exports OTLP to `otel-collector:4317` |
-| **This repo** (`monitoring/`) — Collector | point the **Collector** at **Tempo** (`otel/collector-config.yaml`) |
-| **This repo** (`monitoring/`) — Grafana | add the **Tempo** data source (`grafana/provisioning/datasources/datasources.yml`, or in the Grafana UI) |
+**In the TP1 repo (`../springboot`):**
+1. **Add** the tracing dependency: `micrometer-tracing-bridge-otel` + the
+   OpenTelemetry **Spring Boot starter** (`opentelemetry-spring-boot-starter`).
+2. **Set** the OTel env vars on `listings-api` (in the base `docker-compose`
+   or `application.yml`): `OTEL_SERVICE_NAME=listings-api`,
+   `OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317`, 100% sampling.
+   The canonical form is in **this repo's `README` → "0) Required base edit"**.
+3. **Record an explicit span** on the create path via the `Tracer`:
+   `Tracer.nextSpan().name("listings.create").start() … .end()`.
 
-### Changes to make in the TP1 (`../springboot`)
+**In this repo (`monitoring/`) — Collector:**
+4. **Add** the `otlp/tempo` **exporter** in
+   `otel/collector-config.yaml` (`endpoint: tempo:4317`) and put it on the
+   `traces` pipeline.
 
-| What | From (TP1) | To (this step) |
-|---|---|---|
-| `pom.xml` | (no tracing) | **add** `micrometer-tracing-bridge-otel` + OpenTelemetry **Java agent / Spring Boot starter** |
-| `docker-compose` of the base (or `application.yml`) | (none) | set **OTEL_EXPORTER_OTLP_ENDPOINT** = `http://otel-collector:4317` and **OTEL_SERVICE_NAME** = `listings-api` (env vars), sampling 100% |
-| Business code | (none) | record an explicit span (e.g. `listings.create`) on the create path via `Tracer` |
+**In this repo (`monitoring/`) — Grafana:**
+5. **Add** the **Tempo** data source in
+   `grafana/provisioning/datasources/datasources.yml`
+   (`type: tempo`, `url: http://tempo:3200`), or in the Grafana UI.
+6. **Rebuild + restart** the app (`cd "$TP1_DIR" && docker compose up -d --build
+   listings-api`) so it picks up the starter + env vars, then create a listing.
 
-> The exact dependency set and the OTel env vars are documented in
-> **`../monitoring/README.md` § "0) Required base edit"**, which is the
-> canonical place for what `docker-compose` needs to add on `listings-api`.
+### Expected behavior
+- A `POST /listings` produces a **span named `listings.create`** (you added it
+  explicitly — it is **not** only the auto-generated HTTP span).
+- That span is **stored in Tempo**: `GET …:3200/api/traces/<traceId>` returns
+  it, and a Tempo **search** (last 10 min, `service.name=listings-api`)
+  returns the trace.
+- Each trace keeps a **stable `trace_id`** for the whole request.
+- The Tempo backend is **already up** (Step 1) — you **only wire the Collector
+  to it** and **add the data source**; you do not bring Tempo up.
 
-### Changes to make in this repo (`monitoring/`)
+### Verify
+- [ ] `curl -s "http://localhost:3200/api/search?tags=service.name%3Dlistings-api"` (last 10 min) returns **≥ 1 trace** after you create a listing (`POST /listings`)
+- [ ] Opening one traceId in Tempo shows a span named **`listings.create`** (the explicit one, not only the HTTP span)
+- [ ] `grep -rn "listings.create\|nextSpan\|Tracer" "$TP1_DIR/src"` — the explicit span is in **your** code, not only the auto HTTP span
 
-| File | From (skeleton) | To (this step) |
-|---|---|---|
-| `otel/collector-config.yaml` | receiver + `debug` sink | **add** the `otlp/tempo` **exporter** and put it on the traces pipeline |
-| `grafana/provisioning/datasources/datasources.yml` | Prometheus only | **add** the Tempo data source (`type: tempo`, `url: http://tempo:3200`) |
-
-### Behavior
-
-| # | Requirement |
-|---|---|
-| 4.1 | A `POST /listings` (create a listing) produces a **span named `listings.create`** (not only the auto-generated HTTP span). |
-| 4.2 | That span is **stored in Tempo**: `curl .../api/traces/<traceId>` returns the span; and a Tempo **search** (last 10 min, `service.name=listings-api`) returns traces. |
-| 4.3 | Each trace keeps a **`trace_id`** that is stable for the whole request. |
-
-### Acceptance checklist
-
-- [ ] `curl -s "http://localhost:3200/api/search" (last 10min, tags service.name=listings-api)` returns **≥ 1 trace** after you create a listing (`POST /listings`)
-- [ ] Opening one traceId in Tempo shows a span named **`listings.create`**
-- [ ] In the TP1 code you created an explicit span (not only relying on the auto HTTP span)
-
-### Hints
-
-- The **OTel Spring Boot starter** (`opentelemetry-spring-boot-starter`) reads
-  the standard OTel env vars: set **`OTEL_SERVICE_NAME`** to `listings-api`
-  and **`OTEL_EXPORTER_OTLP_ENDPOINT`** to `http://otel-collector:4317`
-  (see `../monitoring/README.md` § "0) Required base edit" for the canonical
-  form to put in `docker-compose.yml`).
-- `micrometer-tracing-bridge-otel` + a `Tracer` bean gives you
-  `Tracer.nextSpan().name("listings.create").start() … .end()`.
-- In `otel/collector-config.yaml`, add an exporter
-  (`otlp/tempo: { endpoint: "tempo:4317" }`) and reference it in the
-  `traces` pipeline. `curl -X POST http://localhost:3200/api/search` is your
-  verification (`docs/verification.md` §3 / "Traces").
-- The Tempo backend is already up — **you only wire the Collector to it**.
+### If you are stuck
+- The OTel Spring Boot starter reads the **standard** env vars (`OTEL_SERVICE_NAME`, `OTEL_EXPORTER_OTLP_ENDPOINT`). Point the endpoint at the **Collector** (`otel-collector:4317`), **not** at Tempo directly.
+- The Collector's `traces` pipeline must list the tempo exporter in its **`exporters`** key. If the search returns 0 traces, check the pipeline `exporters` line and that the app is actually sending OTLP (watch the Collector logs for `exporter/tempo`).
+- `curl -X POST http://localhost:3200/api/search` (or the GET above) is the verification — the full form is in [`docs/verification.md` §3](docs/verification.md) (Traces).
 
 ---
 
-## Step 5 - Collect logs → Promtail → Loki (with trace_id) `CORE`
+## Step 5 — Collect logs → Promtail → Loki (with trace_id)   CORE
 
-> **User story** — *As an **operations engineer**, I want the API's **log
-> lines** to be searchable in Loki, tagged with `service` and `level`, and I
-> want each line to carry the **same `trace_id`** as its trace, so that I can
-> **jump from a trace to its logs**.*
+**Outcome** — The API's **log lines** are searchable in Loki, tagged with
+`service` and a filterable `level`, and **each line carries the same
+`trace_id`** as its Tempo trace (Step 4) — so you can **jump from a trace to
+its logs**.
 
-Split in two places:
+### Build it
+This step is **split in two repos** — both must be done:
 
-| Where | What to do |
-|---|---|
-| **TP1** (`../springboot`) | add a **file appender** that writes to `/listings-logs/listings.log`, with `trace_id`/`span_id` in the log pattern |
-| **This repo** (`monitoring/`) | make **Promtail** tail `/listings-logs/listings.log` → Loki (`promtail/promtail-config.yaml`) + add the **Loki** data source in Grafana |
+**In the TP1 repo (`../springboot`):**
+1. **Add** a Logback **`FileAppender`** that writes to
+   `/listings-logs/listings.log` (**create the folder** — and the shared
+   `middleware-logs` volume in the base compose, so Promtail can read it).
+2. **Put** the correlation fields in the log pattern: `trace=%X{traceId}`,
+   `span=%X{spanId}` (Micrometer tracing writes these to the **MDC** — that is
+   the correlation link), plus the `level`.
 
-### Changes to make in the TP1 (`../springboot`)
+> **Important:** the log **file path is fixed** to
+> `/listings-logs/listings.log` because that is what **Promtail is configured
+> to tail** (see this repo's `docker-compose.yml`). Do not change it here.
 
-| What | From (TP1) | To (this step) |
-|---|---|---|
-| logging | console only | a **`FileAppender`** that writes `/listings-logs/listings.log` (create the folder) |
-| log pattern | (TP1) | include `trace=%X{traceId}` and `span=%X{spanId}` (these are populated by Micrometer tracing → MDC) and the `level` |
+**In this repo (`monitoring/`):**
+3. **Add** the `listings` job in `promtail/promtail-config.yaml`:
+   `__path__: /listings-logs/listings.log`, a `service` label, and a
+   `regex` + `labels` pipeline stage that **derives `level`** from the line.
+4. **Add** the **Loki** data source in
+   `grafana/provisioning/datasources/datasources.yml`
+   (`type: loki`, `url: http://loki:3100`), or in the Grafana UI.
+5. **Restart** the app so it writes the file
+   (`cd "$TP1_DIR" && docker compose up -d --build listings-api`), then
+   generate some traffic.
 
-> **Important:** the log **file path is fixed** to `/listings-logs/listings.log` because
-> that is what Promtail is configured to tail (see `docker-compose.yml`).
+### Expected behavior
+- A request's **log line is stored in Loki**: the Loki query
+  `{service="listings-api"}` returns it.
+- The line carries the **same `trace_id`** as the trace from Step 4
+  (**correlation**).
+- The line has a **filterable `level`** (`INFO` / `ERROR`) —
+  `{service="listings-api"} |= "ERROR"` works.
 
-### Changes to make in this repo (`monitoring/`)
+### Verify
+- [ ] `curl -s "http://localhost:3100/loki/api/v1/query_range" --data-urlencode 'query={service="listings-api"}'` returns **≥ 1 line** after some traffic
+- [ ] Filtering by level works: add `| level=ERROR` (or `|= "ERROR"`) and an `ERROR` line from your app shows up
+- [ ] The `trace_id` in the log line **matches a real Tempo trace** (Step 4) — paste it into the Tempo API and it resolves
 
-| File | From (skeleton) | To (this step) |
-|---|---|---|
-| `promtail/promtail-config.yaml` | no `listings` job | **add** the `listings` job: `__path__: /listings-logs/listings.log`, `service` label, derive `level` from the line |
-| `grafana/provisioning/datasources/datasources.yml` | Prometheus only | **add** the Loki data source (`type: loki`, `url: http://loki:3100`) |
-
-### Behavior
-
-| # | Requirement |
-|---|---|
-| 5.1 | A request's log line is **stored in Loki**: the Loki query API for `service="listings-api"` returns it. |
-| 5.2 | The line carries the **same `trace_id`** as the trace you looked at in Step 4 (correlation). |
-| 5.3 | The line has a **`level`** label (e.g. `INFO`, `ERROR`) that can be filtered: `{service="listings-api"} |= "ERROR"`. |
-
-### Acceptance checklist
-
-- [ ] `curl -s "http://localhost:3100/loki/api/v1/query_range" --data-urlencode "query={service=\"listings-api\"}"` returns **≥ 1 line** after some traffic
-- [ ] You can filter by level: add `| level=ERROR` (or `|= "ERROR"`) and an `ERROR` line from your app shows up
-- [ ] The `trace_id` in the log line matches a real trace in Tempo (Step 4) — paste it into the Tempo API and it resolves
-
-### Hints
-
-- A Logback `FileAppender` with `<file>/listings-logs/listings.log</file>` under a
-  pattern that includes `%X{traceId}` and `%X{spanId}` (Micrometer tracing
-  writes these to the MDC — this is the **correlation** link).
-- In `promtail/promtail-config.yaml`, the skeleton already shows the exact keys:
-  `__path__: /listings-logs/listings.log` plus a `regex` + `labels` pipeline stage
-  to extract `level`.
-- Add the **Loki** data source in Grafana (provisioning file **or** the UI).
-- Verification: `docs/verification.md` §4 (Logs).
+### If you are stuck
+- The MDC keys are **`traceId`** and **`spanId`** (Micrometer tracing sets them). The Logback pattern uses `%X{traceId}` / `%X{spanId}` — that is **what** makes a log line linkable to a Tempo trace.
+- In `promtail-config.yaml`, the skeleton already shows the exact keys: `__path__: /listings-logs/listings.log` plus a `regex` + `extract`/`labels` stage to build `level`.
+- If Loki has **no** lines, the usual causes: the app is **not writing the file** (check the app logs for the FileAppender) or Promtail is **not tailing the right path** (tail this repo's logs for `promtail` scrape errors).
+- Full copy-pasteable recipe: [`docs/verification.md` §4](docs/verification.md) (Logs).
 
 ---
 
-## Step 6 - Dashboards & alerts (the "look" of an incident) `CORE`
+## Step 6 — Dashboards & alerts (the "look" of an incident)   CORE
 
-> **User story** — *As an **on-call engineer**, I want **one Grafana dashboard**
-> that gives me the three golden signals + logs + traces, and I want a
-> **Prometheus alert** to **fire** when the API is degraded or down, so that
-> I **detect an incident without someone telling me**.*
+**Outcome** — **One Grafana dashboard** shows the three golden signals
+(request rate, p95 latency, error rate) **plus** a logs panel and a traces
+panel, **and** **three Prometheus alerts** (`ApiDown`, `ApiHighErrorRate`,
+`ApiSlow`) exist in config-as-code — with at least **one proven firing**.
+This is where the three pillars you wired in Steps 3-5 **come together**.
 
-This step is **in this repo** (Grafana UI + Prometheus rules file) — it is
-where the three pillars you wired in Steps 3-5 **come together**.
+### Build it
+This step is **in this repo** (Grafana UI + Prometheus rules file):
 
-**What you ship here** (the two separate deliverables):
+1. **Build the dashboard in the Grafana UI** (Dashboards → New). Add panels
+   one by one and pick the **right data source per panel**: **request rate**,
+   **p95 latency**, **error rate** → **Prometheus**; a **logs** panel →
+   **Loki**; a **traces** panel → **Tempo**. The data sources are **already
+   wired** (Prometheus pre-provisioned, Tempo added Step 4, Loki added Step 5)
+   — do **not** re-add them here.
+2. **Write the three alert rules** in `prometheus/rules.yml` (`ApiDown`,
+   `ApiHighErrorRate`, `ApiSlow`), in **one group**
+   (`listings-api`). Each rule has `alert`, `expr`, `for`, `labels`,
+   `annotations.summary`.
+3. **Reload** Prometheus: `curl -X POST http://localhost:9090/-/reload` (or
+   `docker compose restart prometheus`).
+4. **Prove one rule fires** — the easiest is `ApiDown` (see below). Then
+   **screenshot** the dashboard into your team README.
 
-| Artifact | Where it lives | Why |
+**The two deliverables** of this step:
+
+| Artifact | Where | Why |
 |---|---|---|
-| **Grafana dashboard** | In the **Grafana UI** (commit a screenshot of it into your README) | The dashboard is assembled from 3 data sources (prom/lok/tempo) already wired; shipping it as JSON in the repo is *possible* but adds nothing to the pedagogy of Step 6. |
-| **Prometheus alert rules** | In this repo, `prometheus/rules.yml` | Alert rules are config-as-code; they must reload on any new `docker compose up`. |
+| **Grafana dashboard** | In the **Grafana UI** (screenshot in your README) | Assembled from the 3 wired data sources; shipping JSON adds nothing to the pedagogy. |
+| **Prometheus alert rules** | `prometheus/rules.yml` (this repo) | Config-as-code; they must survive any new `docker compose up`. |
 
-### Behavior
+### Expected behavior
+- **One dashboard** (in the UI) with **5-6 self-built panels**: request rate,
+  p95 latency, error rate (Prometheus) + a **logs** panel (Loki) + a
+  **traces** panel (Tempo).
+- **Three alert rules** in `prometheus/rules.yml`:
+  - **`ApiDown`** — no scrape (`up{service="listings-api"} == 0`);
+  - **`ApiHighErrorRate`** — 5xx spike
+    (`sum(rate(http_server_requests_seconds_count{status=~"5.."}[5m]))
+      / sum(rate(http_server_requests_seconds_count[5m])) > 0.05 for 1m`);
+  - **`ApiSlow`** — p95 above 500 ms
+    (`histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket
+      {service="listings-api"}[5m])) by (le)) > 0.5 for 2m`).
+- You **prove** at least one alert **fires**: after the condition,
+  `curl :9090/api/v1/rules` shows a rule with **`state: firing`**.
 
-| # | Requirement |
-|---|---|
-| 6.1 | A **Grafana dashboard** (in the UI, "Listings TP" folder or "General") shows 5-6 panels you build yourself: **request rate**, **p95 latency**, **error rate** (Prometheus), a **logs** panel (Loki), and a **traces** panel (Tempo). |
-| 6.2 | Three alert rules exist and are **correct** in `prometheus/rules.yml`, named **`ApiDown`** (no scrape), **`ApiHighErrorRate`** (5xx spike), **`ApiSlow`** (p95 above threshold). |
-| 6.3 | You **prove** at least one alert fires: after the condition, `curl :9090/api/v1/rules` shows a rule with `state: firing`. The simplest to prove in a lab is **`ApiDown`** (§6.3 hint says how). |
-
-### Acceptance checklist
-
-- [ ] A **single dashboard** (in the UI) shows the three metrics panels **and** the logs panel **and** the traces panel — screenshot saved to the team README
+### Verify
+- [ ] A **single dashboard** (in the UI) shows the three metrics panels **and** the logs panel **and** the traces panel — **screenshot saved to the team README**
 - [ ] `curl -s http://localhost:9090/api/v1/rules | python3 -m json.tool` lists the **3** rules — **`ApiDown`**, **`ApiHighErrorRate`**, **`ApiSlow`** — in a group called `listings-api` (or similar)
-- [ ] You `docker compose stop listings-api` (from `../springboot`) to make the scrape fail, wait `for` + ~30 s, and `curl :9090/api/v1/rules` shows **`ApiDown` in `state: firing`**. Then `docker compose start listings-api` to restore it.
-- [ ] (Optional, if a 5xx can be induced — e.g. an endpoint that throws in TP1) you show **`ApiHighErrorRate` firing** in the same way
+- [ ] `cd "$TP1_DIR" && docker compose stop listings-api` (to make the scrape fail) → wait `for` + ~30 s → `curl :9090/api/v1/rules` shows **`ApiDown` in `state: firing`** → then `docker compose start listings-api` to restore
+- [ ] (Optional, if a 5xx can be induced — e.g. an endpoint that throws in TP1) you show **`ApiHighErrorRate` firing** the same way
 - [ ] A log line with `level=ERROR` (or `INFO`) is visible in the dashboard's **logs** panel
 
-### Hints
-
-- You build the dashboard **in the UI** (Grafana → Dashboards → New). Add panels one by one; pick the right data source per panel (Prometheus / Loki / Tempo). The data sources themselves were wired in **Steps 3-5** (Prometheus pre-provisioned, **Tempo added in Step 4**, **Loki added in Step 5**) — you do **not** re-add them here.
-- **`ApiDown`** is the easiest to prove in a lab: the *target* goes down (`docker compose stop listings-api`), and after the rule's `for:` elapses its `state` flips to **`firing`**. Use a short `for: 1m` (or 30 s) so the proof is not too slow.
-- **`ApiHighErrorRate`**: `sum(rate(http_server_requests_seconds_count{status=~"5.."}[5m])) / sum(rate(http_server_requests_seconds_count[5m])) > 0.05 for 1m` — 5% of requests are 5xx.
-- **`ApiSlow`**: `histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket{service="listings-api"}[5m])) by (le)) > 0.5 for 2m` — p95 above 500 ms.
-- Rules belong in `prometheus/rules.yml` (skeleton already shows the shape). To reload after editing: `curl -X POST http://localhost:9090/-/reload` — or `docker compose restart prometheus`.
-- The 3 rules can share **one** group in `rules.yml`. Each one has: `alert`, `expr`, `for`, `labels`, `annotations.summary`.
-- Verification: `docs/verification.md` §6 (Alerts) walks through the exact `curl` you need to see each rule in `state: firing`.
+### If you are stuck
+- **`ApiDown` is the easiest to prove in a lab** — the *target* goes down (`docker compose stop listings-api`), and after the rule's `for:` elapses its `state` flips to **`firing`**. Use a short `for: 1m` (or 30 s) so the proof is not slow.
+- The three rules can share **one group** in `rules.yml`; the skeleton already shows the shape.
+- Full copy-pasteable walk to see each rule in `state: firing`: [`docs/verification.md` §6](docs/verification.md) (Alerts).
 
 ---
 
-## Step 7 - Correlation & a first SLO `BONUS`
+## Step 7 — Correlation & a first SLO   BONUS
 
-> **User story** — *As a **platform engineer**, I want to **jump from a slow
-> trace to its logs and the metric window** around it, and I want one **SLO
-> (e.g. 99% success, 30d-style)** computed from the metrics, so that I can
-> answer "is the API meeting its commitment?" — not just "is it up?"*
+**Outcome** — From a slow Tempo trace you **jump to its logs** (same
+`trace_id`) and to the metric window around it, and you show **one SLO
+panel** (a success-ratio between 0 and 1) computed from the metrics — so you
+can answer **"is the API meeting its commitment?"**, not just "is it up?".
 
-### Behavior
+### Build it
+> Bonus — build **both** pieces, on the existing wiring from Steps 4-6.
 
-| # | Requirement |
-|---|---|
-| 7.1 | From a Tempo trace, you **open the matching Loki logs** (via the `trace_id`) — demonstrate the link. |
-| 7.2 | An **SLO panel**: availability / success-ratio computed from `http_server_requests_seconds_count` (e.g. 1 - (5xx / total)). |
+1. **Demonstrate the Tempo → Loki jump**: open a Tempo trace, then use the
+   Tempo data source's **traces-to-logs** mapping (via the `trace_id`) to
+   open the matching Loki logs. Confirm the `trace_id` matches.
+2. **Add an SLO panel** in the dashboard: a success-ratio from
+   `http_server_requests_seconds_count` (e.g. `1 - (5xx / total)`).
 
-### Acceptance checklist
+### Expected behavior
+- **7.1** A Tempo trace **opens the matching Loki logs** (via the `trace_id`)
+  — the link is demonstrated, not just asserted.
+- **7.2** An **SLO panel** shows availability / success-ratio computed from
+  `http_server_requests_seconds_count` (e.g. `1 - (5xx / total)`).
 
-- [ ] A Tempo → Loki "traces-to-logs" jump works (same `trace_id`)
-- [ ] A Grafana panel shows a **success-rate / SLO** value between 0 and 1
+### Verify
+- [ ] A Tempo → Loki **"traces-to-logs" jump works** (same `trace_id`)
+- [ ] A Grafana panel shows a **success-rate / SLO** value **between 0 and 1**
 
-### Hints
-
-- Grafana Tempo datasource has a "traces to logs" mapping (see the Tempo datasource
-  `jsonData.tracesToLogsV2` reference in `docs/verification.md`).
-- SLO ratio PromQL: `1 - (sum(rate(http_server_requests_seconds_count{status=~"5.."}[1h])) / sum(rate(http_server_requests_seconds_count[1h])))`
-  (use a window that matches your data: `[1h]` in a lab; `[24h]` / `[30d]` in production).
+### If you are stuck
+- The Grafana Tempo data source has a **traces-to-logs** mapping — see the `jsonData.tracesToLogsV2` reference in [`docs/verification.md`](docs/verification.md).
+- SLO ratio PromQL: `1 - (sum(rate(http_server_requests_seconds_count{status=~"5.."}[1h])) / sum(rate(http_server_requests_seconds_count[1h])))` — use a window that matches your data: `[1h]` in a lab, `[24h]` / `[30d]` in production.
 
 ---
 
-## Step 8 - Two services + a "slow" dependency `BONUS`
+## Step 8 — Two services + a "slow" dependency   BONUS
 
-> **User story** — *As a **platform engineer**, I want the trace to **show a
-> call to a second service** (or a deliberately slow step), so that I can
-> **see the latency split** between the API and the callee — the classic reason
-> we trace instead of only counting requests.*
+**Outcome** — A single request spans **two services** (or an in-app downstream
+step), and the Tempo trace shows **both spans linked by the same `trace_id`**.
+You can **attribute** part of the total latency to the child span — the
+classic reason we **trace** instead of only counting requests.
 
-### Behavior
+### Build it
+> Bonus — add one extra hop, keep it small.
 
-| # | Requirement |
-|---|---|
-| 8.1 | A request spans **two services** (e.g. `listings-api` → `geo-service` or an in-app downstream step) and the Tempo trace shows both spans linked by the same `trace_id`. |
-| 8.2 | You can **attribute** part of the total latency to the child span. |
+1. **Extend** the traced path of Step 4 so a request makes **one more hop**:
+   the simplest is an **in-app downstream call** (a `RestTemplate` /
+   `WebClient` to another endpoint that is also traced), or a **real 2nd
+   Spring Boot app** in Docker that shares the same OTLP endpoint and
+   `traceparent` propagation.
+2. **Keep** the same `service.name` tracing setup, then generate one request
+   and **open** the Tempo trace.
 
-### Acceptance checklist
+### Expected behavior
+- **8.1** A request spans **two services** (e.g. `listings-api` →
+  `geo-service`, or an in-app downstream step); the Tempo trace shows **both
+  spans linked by the same `trace_id`**.
+- **8.2** You can **attribute** part of the total latency to the child span
+  (name which span took most of the time).
 
+### Verify
 - [ ] A Tempo trace shows **2+ spans** (parent `listings.create` + child) sharing one `trace_id`
-- [ ] You can name which span took most of the time
+- [ ] You can name **which span took most of the time** (the child / downstream)
 
-### Hints
-
-- The simplest "second service" is an **in-app downstream call** (a `RestTemplate`/`WebClient`
-  to another endpoint that is also traced), or a real 2nd Spring Boot app in Docker
-  that shares the same OTLP endpoint and `traceparent` propagation. Keep it small.
+### If you are stuck
+- The simplest "second service" is an **in-app downstream call** — a `RestTemplate`/`WebClient` call to another endpoint, also traced. A full 2nd Spring Boot app in Docker works too (same OTLP endpoint, `traceparent` propagation), but keep it small.
 
 ---
 
-## Step 9 - Final Integration (delivery)
+## Step 9 — Final Integration   DELIVERY
 
-| # | Requirement |
-|---|---|
-| 9.1 | `docker compose up -d` → all six services healthy; the stack boots from the **student-filled** configs (no solution files present). |
-| 9.2 | TP1 (`../springboot`) builds and runs on `8080`; generating traffic yields **metrics in Prometheus, traces in Tempo, logs in Loki**. |
-| 9.3 | **One** Grafana dashboard (in the UI, screenshot in the README) shows the three pillars; **three** alert rules exist in `prometheus/rules.yml` and **`ApiDown`** has been shown `firing`. |
-| 9.4 | Your **five config files** (`prometheus/prometheus.yml`, `prometheus/rules.yml`, `otel/collector-config.yaml`, `promtail/promtail-config.yaml`, `grafana/provisioning/datasources/datasources.yml`) are in the repo; the **reference solutions** are **not** in the repo. |
-| 9.5 | README documents: how to start the stack, the three pipelines, the ports, and one alert + one dashboard screenshot. |
-| 9.6 | Oral (10 min + 5 min Q&A): *walk one slow request from the Grafana panel → the Tempo trace → the Loki log*, explaining which middleware produced each part. |
+**Outcome** — The whole stack boots cleanly from **your own configs** (no
+solution files present): all six services healthy, TP1 on `8080`, traffic
+yields **metrics in Prometheus, traces in Tempo, logs in Loki**, one dashboard
+shows the three pillars, and `ApiDown` has been shown **firing**. The
+evaluator can start the stack and **trust the output**.
+
+### Final checks
+- [ ] `cd "$MON_DIR" && docker compose up -d` → **all six services healthy**; the stack boots from the **student-filled** configs (no solution files present)
+- [ ] `cd "$TP1_DIR" && mvn verify && docker compose up -d` → TP1 builds and runs on `8080`; generating traffic yields **metrics in Prometheus, traces in Tempo, logs in Loki**
+- [ ] **One** Grafana dashboard (in the UI, screenshot in the README) shows the three pillars; **three** alert rules in `prometheus/rules.yml` and **`ApiDown`** has been shown `firing`
+- [ ] Your **five config files** (`prometheus/prometheus.yml`, `prometheus/rules.yml`, `otel/collector-config.yaml`, `promtail/promtail-config.yaml`, `grafana/provisioning/datasources/datasources.yml`) are in **this** repo; the **reference solutions** are **not**
+- [ ] The team **README** documents: how to start the stack, the three pipelines, the ports, and one alert + one dashboard **screenshot**
+- [ ] **Oral** (10 min + 5 Q&A): walk **one slow request** from the Grafana panel → the Tempo trace → the Loki log, explaining which middleware produced each part
+
+### If you are stuck
+- The **team README** is where you write **what** you wired and **why** (not a copy of this exercise statement) — it is your **oral-prep**. If you cannot say *which* middleware produced the metrics / the trace / the log, write it down and re-check.
+- The **smoke bar** is `docker compose up` green + the three backends returning data — you do **not** need new Java tests (see Overview).
 
 ---
 

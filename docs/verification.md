@@ -5,11 +5,19 @@ After `docker compose up -d` (see `../README.md`), run each section
 in order. Every section ends with a `curl` that should return data —
 that is the evidence that the pipeline actually works.
 
-> **Prerequisite:** the Spring Boot TP1 app (base compose in `../springboot`)
-> is up at `http://localhost:8080/actuator/health` and instrumented (metrics,
-> tracing, log file). See `../README.md` "Run" for the required base edits.
-> If the app is not up yet, run Section 1 only — the stack starts regardless,
-> and the backends stay healthy with zero inbound data.
+> **Prerequisite:** the Spring Boot TP1 app (base compose in your `springboot`
+> repo) is up at `http://localhost:8080/actuator/health` and instrumented
+> (metrics, tracing, log file). See **README → Run** for the required base
+> edits. If the app is not up yet, run Section 1 only — the stack starts
+> regardless, and the backends stay healthy with zero inbound data.
+>
+> **Paths:** the commands below use two variables, set once per terminal
+> (from the "Run" box of [`README.md`](../README.md)):
+>
+> ```bash
+> export TP1_DIR="/path/to/your/tps-1-repo"     # the Spring Boot app repo
+> export MON_DIR="/path/to/monitoring-repo"     # this monitoring repo
+> ```
 
 ---
 
@@ -176,7 +184,7 @@ To **prove one fires** during the lab (the easiest is `ApiDown`):
 
 ```bash
 # Stop the target -> the scrape goes down -> `up{job="listings-api"}` == 0
-cd ../springboot && docker compose stop listings-api
+cd "$TP1_DIR" && docker compose stop listings-api
 # Wait for the rule's `for:` (e.g. 1m) + ~30s, then check the state:
 sleep 90
 curl -s http://localhost:9090/api/v1/rules | python3 -m json.tool | grep -A1 ApiDown
