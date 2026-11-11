@@ -5,8 +5,8 @@ TP1 listings API** and wire it into a **full observability stack** so every
 request can be *measured*, *traced*, and *logged* across the three pillars.
 
 - **Metrics** — Spring Actuator → (you write the scrape) → **Prometheus** → Grafana
-- **Traces**  — Micrometer / OTel → (you wire the collector) → **Tempo** → Grafana
-- **Logs**    — Logback file → (you wire Promtail) → **Loki** → Grafana
+- **Traces**  — Micrometer Tracing / OTel → (you wire the collector) → **Tempo** → Grafana
+- **Logs**    — Spring Boot log file → (you wire Grafana Alloy) → **Loki** → Grafana
 
 What you are given vs what you build:
 
@@ -14,7 +14,7 @@ What you are given vs what you build:
 |---|---|
 | The 6 backend services (`docker-compose.yml`) | The **Prometheus scrape job** for the API |
 | The three **stores** (Prometheus, Loki, Tempo) | The **Collector → Tempo** trace pipeline |
-| Grafana (UI) | The **Promtail → Loki** log pipeline |
+| Grafana (UI) | The **Alloy → Loki** log pipeline |
 | `exercise.md`, `docs/verification.md` | The **datasources**, one **dashboard**, the **alert rules** |
 | | The **TP1 instrumentation** (deps, code, log file) |
 
@@ -29,15 +29,15 @@ network** (`middleware`, created by the base in `../springboot/docker-compose.ym
 | Project | Folder | Services | Host ports |
 |---|---|---|---|
 | base | `../springboot` | `listings-api`, `listings-postgres` | API `8080`, pg `5435` |
-| this | `monitoring` | `prometheus`, `loki`, `tempo`, `otel-collector`, `promtail`, `grafana` | `9090/3100/3200/4317/4318/3000` |
+| this | `monitoring` | `prometheus`, `loki`, `tempo`, `otel-collector`, `alloy`, `grafana` | `9090/3100/3200/4317/4318/12345/3000` |
 
 The app is on **8080** for this TP (and for every TP — even the Keycloak one,
 where Keycloak itself takes `8081`). Services discover each other by
 **container name** over the shared network:
 
 - **Prometheus** scrapes the app at `listings-api:8080` (Step 3).
-- **The app** pushes OTLP gRPC to `otel-collector:4317` (Step 4).
-- **Promtail** tails the log file on the shared volume `middleware-logs`
+- **The app** pushes OTLP over HTTP to `otel-collector:4318` (Step 4).
+- **Alloy** tails the log file on the shared volume `middleware-logs`
   (Step 5) — the app writes it there (see "required base edit" below).
 - **The Collector** relays spans to `tempo:4317` (Step 4).
 
@@ -46,10 +46,12 @@ where Keycloak itself takes `8081`). Services discover each other by
 - Docker + Docker Compose (`docker compose version`)
 - JDK 27 + Maven 3.9+ (already installed for TP1)
 - Ports free on the host: `3000` Grafana · `9090` Prometheus · `3100` Loki ·
-  `3200` Tempo · `4317/4318` Collector · `8080` the API · `5435` the API's Postgres
+  `3200` Tempo · `4317/4318` Collector · `12345` Alloy (UI) · `8080` the API ·
+  `5435` the API's Postgres
 
-> **Tip:** Keycloak and Monitoring are **alternatives** — both start the base
-> `listings-api` (same container name), so run **one** at a time.
+> **Tip:** the four TP2s (Keycloak, Monitoring, IA, Messaging) are
+> **alternatives** — they all use the base `listings-api` (same container
+> name), so run **one** TP2 stack at a time.
 
 ## Run
 
@@ -64,18 +66,27 @@ where Keycloak itself takes `8081`). Services discover each other by
 
 ### 0) Required base edit — `../springboot/docker-compose.yml`
 
-So the app pushes traces to the collector and writes the shared log file, add
-to the `listings-api` service's `environment` (the `LOG_FILE` env and the
-`listings-logs` volume already exist in the base):
+So the app pushes traces to the collector, add to the `listings-api`
+service's `environment` (the `LOGGING_FILE_NAME` env and the `listings-logs`
+volume, used by Step 5, already exist in the base):
 
 ```yaml
   listings-api:
     environment:
-      # push traces to the collector over the shared network name (not localhost)
-      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
       OTEL_SERVICE_NAME: "listings-api"
-      # (already present in the base) LOG_FILE: "/listings-logs/listings.log"
+      # OTLP over HTTP (Spring Boot's default transport) to the collector's
+      # HTTP port, by network name (not localhost, not the gRPC port 4317)
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4318"
+      # trace every request (Spring Boot samples 10 % by default)
+      OTEL_TRACES_SAMPLER: "always_on"
+      # metrics go to Prometheus by scrape, not over OTLP
+      OTEL_METRICS_EXPORTER: "none"
+      # (already present in the base) LOGGING_FILE_NAME: "/listings-logs/listings.log"
 ```
+
+Spring Boot 4 maps these standard `OTEL_*` variables to its own settings
+(`management.opentelemetry.map-environment-variables`, on by default): there
+is no tracing property to add in `application.yml`.
 
 ### 1) Start the base (the API + its Postgres)
 
@@ -103,14 +114,16 @@ you complete in Steps 3-6 (see `exercise.md`).
 
 The instrumentation is **code in TP1** (`../springboot`), not an agent:
 
-- add the metrics + tracing dependencies (Step 3 & 4);
-- expose `/actuator/prometheus` and record a business metric (Step 3);
-- enable the OTel OTLP exporter to `otel-collector:4317` + one span (Step 4);
-- add a Logback **file appender** to `${LOG_FILE}` =
-  `/listings-logs/listings.log` (the shared volume Promtail tails) in Step 5.
+- add `micrometer-registry-prometheus`, expose `/actuator/prometheus`, and
+  turn on the HTTP latency histogram (Step 3);
+- add `spring-boot-starter-opentelemetry` + the `OTEL_*` env of §0 + one
+  explicit span (Step 4);
+- nothing to code for logs: Spring Boot already writes
+  `/listings-logs/listings.log` (`LOGGING_FILE_NAME`), with the trace id in
+  each line once tracing is on (Step 5).
 
-`docker compose restart listings-api` (from `../springboot`) to pick up
-changes. Then generate traffic (`GET /listings`) — that is what the three
+`docker compose up -d --build listings-api` (from `../springboot`) to pick up
+changes (a plain `restart` reruns the old image). Then generate traffic (`GET /listings`) — that is what the three
 pipelines observe.
 
 ### 4) Stop
@@ -131,15 +144,15 @@ monitoring/
 │   └── rules.yml             # SCAFFOLD — you add the alert rules (Step 6)
 ├── otel/
 │   └── collector-config.yaml # SCAFFOLD — you add the OTLP→Tempo exporter (Step 4)
-├── promtail/
-│   └── promtail-config.yaml  # SCAFFOLD — you add the listings log job (Step 5)
+├── alloy/
+│   └── config.alloy          # SCAFFOLD — you add the log pipeline to Loki (Step 5)
 ├── grafana/
 │   └── provisioning/datasources/datasources.yml  # SCAFFOLD — you add Loki+Tempo (Step 5/6)
 ├── loki/loki-config.yaml     # store (fixed) — file storage
 ├── tempo/tempo.yaml          # store (fixed) — file storage + OTLP receiver
 ├── docs/verification.md      # live per-pillar check + copy-paste curl
 ├── README.md                 # this file
-└── exercise.md               # the statement (8h, core 1-6 + bonus 7-8 + delivery 9)
+└── exercise.md               # the statement (core 1-6 + bonus 7-8 + delivery 9)
 ```
 
 > **Solutions** (supervisor only, NOT shipped): `../../solutions/monitoring/`.
@@ -150,8 +163,11 @@ monitoring/
 - Loki: <https://grafana.com/docs/loki/latest/>
 - Tempo: <https://grafana.com/docs/tempo/latest/>
 - OpenTelemetry Collector: <https://opentelemetry.io/docs/collector/>
-- Micrometer Tracing + OTel bridge: <https://micrometer.io/docs/tracing>
+- Spring Boot 4.1 — metrics: <https://docs.spring.io/spring-boot/4.1/reference/actuator/metrics.html>
+- Spring Boot 4.1 — tracing (OpenTelemetry): <https://docs.spring.io/spring-boot/4.1/reference/actuator/tracing.html>
+- Spring Boot 4.1 — logging (file, correlation): <https://docs.spring.io/spring-boot/4.1/reference/features/logging.html>
 - Grafana data sources: <https://grafana.com/docs/grafana/latest/datasources/>
+- Grafana Alloy (log pipeline, replaces Promtail): <https://grafana.com/docs/alloy/latest/>
 
 > TP rule: no `TODO`, no stub, no secret in production code.
 > The `admin/admin` credentials are for the academic environment only.

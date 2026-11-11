@@ -7,16 +7,16 @@
 #       - loki        host 3100   (logs)
 #       - tempo       host 3200   (traces)
 #       - otel-collect host 4317/4318 (receives OTLP from the app)
-#       - promtail                 (tails the shared log -> Loki)
+#       - alloy       host 12345  (tails the shared log -> Loki; UI + /-/ready)
 #       - grafana     host 3000   (UI over all three)
 #
 #  How it reaches the app (all over the `middleware` network):
 #    * Prometheus   -> scrape target `listings-api:8080` (see
 #      ../monitoring/prometheus/prometheus.yml).
-#    * App -> Tempo  -> app pushes OTLP gRPC to `otel-collector:4317`
-#      (set in the app, see README "Run"). We relay to `tempo:4317`.
+#    * App -> Tempo  -> app pushes OTLP over HTTP to `otel-collector:4318`
+#      (OTEL_* env, see README "Run" §0). We relay to `tempo:4317` (gRPC).
 #    * App -> Loki   -> app writes /listings-logs/listings.log on the
-#      shared volume `middleware-logs`; Promtail tails that same volume.
+#      shared volume `middleware-logs`; Alloy tails that same volume.
 #    * Services find each other by `container_name`.
 #
 #  BEFORE YOU RUN: read "Run" in ../monitoring/README.md — it lists the
@@ -40,7 +40,7 @@ volumes:
   prom-data:
   loki-data:
   tempo-data:
-  promtail-positions:
+  alloy-data:
   grafana-data:
   middleware-logs:
     name: middleware-logs   # shared with the app (see base file snippet)
@@ -62,9 +62,6 @@ services:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./prometheus/rules.yml:/etc/prometheus/rules.yml:ro
       - prom-data:/prometheus
-    extra_hosts:
-      # Lets Prometheus reach the host where the Spring Boot app runs (8081)
-      - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
       interval: 10s
@@ -115,8 +112,8 @@ services:
     container_name: mon-otel-collector
     command: ["--config=/etc/otel/collector-config.yaml"]
     ports:
-      - "4317:4317"    # OTLP gRPC (the app pushes here, from the network)
-      - "4318:4318"    # OTLP HTTP
+      - "4317:4317"    # OTLP gRPC
+      - "4318:4318"    # OTLP HTTP (the app pushes here, from the network)
     volumes:
       - ./otel/collector-config.yaml:/etc/otel/collector-config.yaml:ro
     depends_on:
@@ -124,21 +121,34 @@ services:
         condition: service_healthy
     networks: [middleware]
 
-  # ---------------- Promtail (log shipper) ----------------
-  promtail:
-    image: grafana/promtail:2.9.9
-    container_name: mon-promtail
+  # ---------------- Grafana Alloy (log shipper) ----------------
+  # Replaces Promtail (end of life since 2026-03). Tails the shared log file
+  # and pushes to Loki. UI (component graph) and /-/ready on host 12345.
+  alloy:
+    image: grafana/alloy:v1.21.3
+    container_name: mon-alloy
     command:
-      - "-config.file=/etc/promtail/config.yml"
-      - "-log.level=info"
+      - "run"
+      - "--server.http.listen-addr=0.0.0.0:12345"
+      - "--storage.path=/var/lib/alloy/data"
+      - "/etc/alloy/config.alloy"
+    ports:
+      - "12345:12345"   # Alloy UI + /-/ready + /-/reload
     volumes:
-      # The SAME shared volume the app writes to (see base / README snippet).
+      # The SAME shared volume the app writes to (see the base compose).
       - middleware-logs:/listings-logs:ro
-      - ./promtail/promtail-config.yaml:/etc/promtail/config.yml:ro
-      - promtail-positions:/positions
+      - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - alloy-data:/var/lib/alloy/data      # read positions (survive restarts)
     depends_on:
       loki:
         condition: service_healthy
+    healthcheck:
+      # no curl/wget in the image: plain HTTP over bash /dev/tcp
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/12345 && printf \"GET /-/ready HTTP/1.0\\r\\n\\r\\n\" >&3 && grep -q \"200 OK\" <&3' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+      start_period: 10s
     networks: [middleware]
 
   # ---------------- Grafana (UI) ----------------
@@ -172,21 +182,14 @@ services:
 # =====================================================================
 #  REQUIRED EDITS in ../springboot/docker-compose.yml  (see README "Run")
 #
-#  In the `listings-api` service, add to `environment`:
-#      # push OTLP gRPC to the collector over the network name (not localhost)
-#      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+#  In the `listings-api` service, add to `environment` (README "Run" §0):
 #      OTEL_SERVICE_NAME: "listings-api"
-#      # write the shared log file that Promtail tails
-#      LOG_FILE: "/listings-logs/listings.log"
+#      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4318"   # OTLP/HTTP
+#      OTEL_TRACES_SAMPLER: "always_on"
+#      OTEL_METRICS_EXPORTER: "none"
 #
-#  and add to `services.listings-api`:
-#      volumes:
-#        - middleware-logs:/listings-logs
-#
-#  and declare the shared volume once at the top level of that base file:
-#      volumes:
-#        middleware-logs:
-#          name: middleware-logs
+#  Already in the base file (nothing to add): the LOGGING_FILE_NAME env
+#  (/listings-logs/listings.log) and the shared `middleware-logs` volume.
 #
 #  The API stays published on host 8080 for this TP (Prometheus scrapes
 #  listings-api:8080 over the network).

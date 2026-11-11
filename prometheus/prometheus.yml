@@ -36,7 +36,8 @@ scrape_configs:
       - targets: ["localhost:9090"]
 
   # STEP 3 (student): add the listings-api scrape job HERE.
-  # Example SHAPe (target the container on the shared network):
+  # Example SHAPE (target the container on the shared network; the `service`
+  # label is added HERE, not by the app):
   # - job_name: "listings-api"
   #   metrics_path: "/actuator/prometheus"
   #   static_configs:

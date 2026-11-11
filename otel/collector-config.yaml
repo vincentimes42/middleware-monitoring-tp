@@ -4,8 +4,8 @@
 #  GOAL (Step 4): make the Collector ACCEPT spans (OTLP) from the app and
 #  DELIVER them to Tempo.
 #
-#  The app pushes OTLP over gRPC to `localhost:4317` (host-published).
-#  Tempo listens for OTLP gRPC on port 4317 (it is reachable as host `tempo`).
+#  The app pushes OTLP over HTTP to `otel-collector:4318` (network name).
+#  Tempo listens for OTLP gRPC on port 4317 (reachable as host `tempo`).
 #
 #  The config below BOOTS (OTLP receiver + a `debug` sink), so the stack is
 #  up before you wire it. STEP 4: add a `otlp/tempo` EXPORTER and point the

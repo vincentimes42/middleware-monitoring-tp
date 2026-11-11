@@ -25,14 +25,19 @@ that is the evidence that the pipeline actually works.
 
 ```bash
 docker compose ps
-curl -fsS http://localhost:3000/api/health
-curl -fsS http://localhost:9090/-/healthy
-curl -fsS http://localhost:3100/ready
-curl -fsS http://localhost:3200/ready
-curl -fsS -o /dev/null -w "collector-OTLP-HTTP-%{http_code}\n" http://localhost:4318/
+curl -fsS http://localhost:9090/-/healthy        # Prometheus Server is Healthy.
+curl -fsS http://localhost:3100/ready            # ready
+curl -fsS http://localhost:3200/ready            # ready
+curl -fsS http://localhost:12345/-/ready         # Alloy is ready.
+# Grafana up AND provisioned (/api/health alone says nothing about data sources)
+curl -fsS -u admin:admin http://localhost:3000/api/datasources \
+  | python3 -c 'import sys,json;print([d["name"] for d in json.load(sys.stdin)])'
+# Collector accepts OTLP/HTTP (GET / answers 404: that is normal)
+curl -s -o /dev/null -w "collector OTLP/HTTP -> %{http_code}\n" \
+  -X POST http://localhost:4318/v1/traces -H 'Content-Type: application/json' -d '{}'
 ```
 
-Expected: all 200 / "healthy" / "ready".
+Expected: "healthy" / "ready" / `['Prometheus']` (more after Steps 4-5) / `200`.
 
 ---
 
@@ -46,6 +51,13 @@ for i in $(seq 1 10); do
 done
 ```
 
+On the app side (Step 3, items 1-3):
+
+```bash
+curl -s http://localhost:8080/actuator/prometheus | grep -c '^http_server_requests_seconds_bucket'   # > 0
+curl -s http://localhost:8080/actuator/prometheus | grep '^listings_creations_total'
+```
+
 Then **scrape** via Prometheus:
 
 ```bash
@@ -57,51 +69,68 @@ curl -s --get "http://localhost:9090/api/v1/query" \
   --data-urlencode 'query=http_server_requests_seconds_count{service="listings-api"}' \
   | python3 -m json.tool | head -25
 
-# Sum of requests since first scrape
+# Total number of requests counted by the app (scraped value)
 curl -s --get "http://localhost:9090/api/v1/query" \
-  --data-urlencode 'query=sum(increase(http_server_requests_seconds_count{service="listings-api"}[5m]))' \
+  --data-urlencode 'query=sum(http_server_requests_seconds_count{service="listings-api"})' \
   | python3 -c 'import sys,json;d=json.load(sys.stdin);[print(r["value"][1]) for r in d["data"]["result"]]'
 ```
 
 Expected: a number > 0 in the last query.
 
+```bash
+# the business counter and the scrape target
+for q in 'listings_creations_total{service="listings-api"}' 'up{job="listings-api"}'; do
+  curl -s --get "http://localhost:9090/api/v1/query" --data-urlencode "query=$q" \
+    | python3 -c 'import sys,json;[print(r["metric"].get("__name__"), r["value"][1]) for r in json.load(sys.stdin)["data"]["result"]]'
+done
+```
+
 ---
 
 ## 3) Traces — app → Collector → Tempo
 
-Wait ~10s after generating traffic for the batch to flush.
+Create a listing first (Step 4 adds the `listings.create` span to that path),
+then wait ~10 s for the batch to flush.
 
 ```bash
-# Search for recent traces in Tempo
-NOW=$(date -u +%s)
-START=$((NOW - 600))
-curl -s -X POST http://localhost:3200/api/search \
-  -H "Content-Type: application/json" \
-  -d '{"start":"'"$(date -u -d "@$START" +%FT%TZ)"'","end":"'"$(date -u -d "@$NOW" +%FT%TZ)"'\
-       "limit":5,"tags":{"service.name":"listings-api"}}' \
-  | python3 -c 'import sys,json;d=json.load(sys.stdin);[print(t.get("traceID") or t.get("traceId"),"|",t.get("rootTraceName"),"|",t.get("rootServiceName")) for t in d.get("traces",[])]'
+# recent traces of the service (last 10 min)
+NOW=$(date +%s)
+curl -s --get http://localhost:3200/api/search \
+  --data-urlencode 'tags=service.name=listings-api' \
+  --data-urlencode "start=$((NOW - 600))" --data-urlencode "end=$NOW" --data-urlencode 'limit=5' \
+  | python3 -c 'import sys,json;[print(t["traceID"],"|",t.get("rootTraceName"),"|",t.get("rootServiceName")) for t in json.load(sys.stdin).get("traces",[])]'
+
+# TraceQL: traces that contain the explicit span
+TID=$(curl -s --get http://localhost:3200/api/search --data-urlencode 'q={name="listings.create"}' --data-urlencode 'limit=1' \
+  | python3 -c 'import sys,json;t=json.load(sys.stdin)["traces"];print(t[0]["traceID"] if t else "")')
+echo "trace with listings.create: $TID"
+
+# the spans of that trace
+curl -s http://localhost:3200/api/traces/$TID | python3 -c '
+import sys,json; d=json.load(sys.stdin)
+print([s["name"] for b in d["batches"] for ss in b["scopeSpans"] for s in ss["spans"]])'
 ```
 
-Expected: at least one line with `traceID`, `rootTraceName`
-(e.g. `http_server / GET /listings`), `rootServiceName` = `listings-api`.
+Expected: lines with `rootTraceName` like `http post /listings` and
+`rootServiceName` = `listings-api`; the span list contains `listings.create`.
 
-If empty, check whether the app is actually exporting:
+If empty, check what the app and the Collector say:
 
 ```bash
-# From the host, look at the app log for OTel SDK / exporter lines
-grep -i "otel\|otlp\|exporter\|trace" <tp1-app.log> 2>/dev/null | tail -10 || \
-  echo "No OTel lines yet - check the app's tracing deps + otel.* config (Step 4)."
+(cd "$TP1_DIR" && docker compose exec listings-api env | grep ^OTEL_)   # the 4 variables of README §0
+(cd "$TP1_DIR" && docker compose logs --since 5m listings-api | grep -iE "otlp|export" | tail -5)
+docker compose logs --since 5m otel-collector | tail -5
 ```
 
 ---
 
-## 4) Logs — app (file) → Promtail → Loki
+## 4) Logs — app (file) → Alloy → Loki
 
 > Two ways to prove Loki stores and returns a stream:
 > - (a) **before the app is wired** (Step 2): push a single line through the
 >   Loki **push API** below — the simplest proof the backend works.
 > - (b) **after the app is wired** (Step 5): query the `service="listings-api"`
->   stream the app's file appender feeds Promtail.
+>   stream that Alloy ships from the app's log file.
 
 ```bash
 # (a) Push ONE synthetic line straight to Loki (no app required):
@@ -109,10 +138,15 @@ curl -s -o /dev/null -w "loki-push:%{http_code}\n" \
   -X POST http://localhost:3100/loki/api/v1/push \
   -H "Content-Type: application/json" \
   -d '{"streams":[{"stream":{"service":"listings-api","level":"INFO"},
-       "values":[["1700000000000000000","TP2 Step 2 sanity line"]]}]}'
+       "values":[["'"$(date +%s%N)"'","TP2 Step 2 sanity line"]]}]}'
+# expected: loki-push:204 (a fixed old timestamp is rejected with 400: Loki
+# refuses entries older than one week)
 
 # (b) Query Loki for any line with service=listings-api (Step 5 stream):
-docker logs --tail 20 mon-promtail 2>&1 | grep -i "tailer\|new\|watch"
+curl -fsS http://localhost:12345/-/ready                      # Alloy is ready.
+# every component of your pipeline must be "healthy"
+curl -s http://localhost:12345/api/v0/web/components \
+  | python3 -c 'import sys,json;[print(c["localID"], c["health"]["state"]) for c in json.load(sys.stdin)]'
 
 curl -s 'http://localhost:3100/loki/api/v1/query_range' \
   --data-urlencode "query={service=\"listings-api\"}" \
@@ -136,11 +170,16 @@ If **empty**, the app has not written to the shared log volume
 (`/listings-logs/listings.log`). Verify:
 
 ```bash
-docker compose \
-  --project-name monitoring-tp exec -T mon-promtail sh \
-  -c "ls -l /listings-logs && tail -5 /listings-logs/listings.log" \
-  || echo "file missing - not yet instrumented"
-docker logs --tail 20 mon-promtail 2>&1
+(cd "$TP1_DIR" && docker compose exec -T listings-api tail -3 /listings-logs/listings.log) \
+  || echo "file missing - check LOGGING_FILE_NAME in the base compose"
+docker compose logs --tail 20 alloy
+
+# level label (Step 5): both must return lines
+for lvl in INFO ERROR; do
+  curl -s --get 'http://localhost:3100/loki/api/v1/query_range' \
+    --data-urlencode "query={service=\"listings-api\", level=\"$lvl\"}" --data-urlencode 'limit=1' \
+    | python3 -c "import sys,json;r=json.load(sys.stdin)['data']['result'];print('$lvl:', r[0]['values'][0][1][:140] if r else 'no line')"
+done
 ```
 
 ---
@@ -185,12 +224,24 @@ To **prove one fires** during the lab (the easiest is `ApiDown`):
 ```bash
 # Stop the target -> the scrape goes down -> `up{job="listings-api"}` == 0
 cd "$TP1_DIR" && docker compose stop listings-api
-# Wait for the rule's `for:` (e.g. 1m) + ~30s, then check the state:
+# Wait for the rule's `for:` (1m) + ~30s, then check the state:
 sleep 90
-curl -s http://localhost:9090/api/v1/rules | python3 -m json.tool | grep -A1 ApiDown
+curl -s http://localhost:9090/api/v1/rules \
+  | python3 -c 'import sys,json;[print(r["name"],r["state"]) for g in json.load(sys.stdin)["data"]["groups"] for r in g["rules"]]'
 
 # Restore the app:
 docker compose start listings-api
+```
+
+`ApiHighErrorRate` (optional): keep a mix of normal and failing calls for
+~2 min, then read the rules again.
+
+```bash
+for i in $(seq 1 120); do
+  curl -s -o /dev/null http://localhost:8080/listings
+  curl -s -o /dev/null -u 'alice@test.org:secret123' http://localhost:8080/no-such-path   # 500 in TP1
+  sleep 1
+done
 ```
 
 ---

@@ -1,0 +1,54 @@
+// =====================================================================
+//  Grafana Alloy - TP Monitoring (log pipeline)
+//
+//  GOAL (Step 5): make Alloy TAIL the app's log file and SHIP the lines
+//  to Loki, labelled so you can query them by `service` and `level`.
+//
+//  The app (TP1) writes its log to the shared volume at
+//  /listings-logs/listings.log (LOGGING_FILE_NAME in
+//  ../springboot/docker-compose.yml); Alloy mounts that volume read-only.
+//  Loki push API: http://loki:3100/loki/api/v1/push
+//
+//  An Alloy config is a set of COMPONENTS wired together:
+//      <component.type> "<label>" { arguments ... }
+//  and a component reads another one's output by reference:
+//      forward_to = [loki.write.loki.receiver]
+//
+//  The config below BOOTS cleanly (only the Loki writer, nothing feeds it).
+//  In STEP 5 you add three components in front of it, in this order:
+//      local.file_match  -> which file(s), with the labels `service` (+ job)
+//      loki.source.file  -> tail those files
+//      loki.process      -> a regex stage that extracts `level`,
+//                           a labels stage that turns it into a label
+//  ... and the last one forwards to loki.write.loki.receiver.
+//
+//  Reload after an edit:  curl -X POST http://localhost:12345/-/reload
+//  Component graph (UI):  http://localhost:12345
+// =====================================================================
+
+// Ship to Loki (present so the service boots; your pipeline forwards here).
+loki.write "loki" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}
+
+// STEP 5 (student): add your components below. Example SHAPE:
+//
+// local.file_match "listings" {
+//   path_targets = [{
+//     __path__ = "/listings-logs/listings.log",
+//     service  = "listings-api",
+//   }]
+// }
+//
+// loki.source.file "listings" {
+//   targets    = local.file_match.listings.targets
+//   forward_to = [loki.process.listings.receiver]
+// }
+//
+// loki.process "listings" {
+//   stage.regex { expression = `...` }      // capture group named `level`
+//   stage.labels { values = { level = "" } }
+//   forward_to = [loki.write.loki.receiver]
+// }
