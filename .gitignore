@@ -2,26 +2,33 @@
 #  TP Monitoring / Observability — .gitignore
 # ------------------------------------------------------------------
 
-# The app's log file now lives on the shared `middleware-logs` volume,
-# not in this tree — nothing to ignore for logs anymore.
+# The app's log file lives on the shared `middleware-logs` volume; the local
+# `logs/` folder is only a placeholder kept by `.gitkeep`.
+logs/*
+!logs/.gitkeep
 
-# Local data / secrets / editors
-*.log
-*.env
+# --- Secrets and local env (the Gemini key lives in the shell only) ---
 .env
 .env.*
+*.env
 *.local
-*.sqlite
-*.db
 
-# IDE
+# --- IDE ---
 .idea/
-.vscode/
 *.iml
+*.ipr
+*.iws
+.vscode/
+.classpath
+.project
+.settings/
+.factorypath
 
-# Ad-hoc scratch / shell-redirect output (e.g. `docker compose ... 2> err.txt`)
+# --- Logs and ad-hoc shell-redirect output (e.g. `... 2> err.txt`) ---
+*.log
 /err*.txt
 /out*.txt
 
-# OS
+# --- OS ---
 .DS_Store
+Thumbs.db
