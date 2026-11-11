@@ -43,6 +43,7 @@ where Keycloak itself takes `8081`). Services discover each other by
 
 ## Prerequisites
 
+- Linux or WSL2, Bash terminal ([details](../springboot/README.md#operating-system-and-shell)).
 - Docker + Docker Compose (`docker compose version`)
 - JDK 27 + Maven 3.9+ (already installed for TP1)
 - Ports free on the host: `3000` Grafana · `9090` Prometheus · `3100` Loki ·
@@ -141,7 +142,7 @@ monitoring/
 ├── docker-compose.yml       # 6 backend services, attached to the shared `middleware`
 ├── prometheus/
 │   ├── prometheus.yml        # SCAFFOLD — you add the listings-api scrape job (Step 3)
-│   └── rules.yml             # SCAFFOLD — you add the alert rules (Step 6)
+│   └── rules.yml             # SCAFFOLD — you add the alert rules (Step 6b)
 ├── otel/
 │   └── collector-config.yaml # SCAFFOLD — you add the OTLP→Tempo exporter (Step 4)
 ├── alloy/
@@ -150,6 +151,7 @@ monitoring/
 │   └── provisioning/datasources/datasources.yml  # SCAFFOLD — you add Loki+Tempo (Step 5/6)
 ├── loki/loki-config.yaml     # store (fixed) — file storage
 ├── tempo/tempo.yaml          # store (fixed) — file storage + OTLP receiver
+├── docs/primer.md            # observability, the six services, what not to do
 ├── docs/verification.md      # live per-pillar check + copy-paste curl
 ├── README.md                 # this file
 └── exercise.md               # the statement (core 1-6 + bonus 7-8 + delivery 9)

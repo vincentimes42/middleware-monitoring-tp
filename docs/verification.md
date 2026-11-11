@@ -187,22 +187,22 @@ done
 ## 5) Grafana dashboards (you build them)
 
 > **No starter dashboard JSON ships in this repo** — you create the dashboards
-> as part of exercise.md **Step 6** ("Dashboards & alerts"). The `providers.yml`
+> as part of exercise.md **Step 6a** ("One dashboard"). The `providers.yml`
 > only configures the "Listings TP" **folder** and the datasource wiring.
 
-Open <http://localhost:3000> with `admin`/`admin`. In **Step 6** you will
+Open <http://localhost:3000> with `admin`/`admin`. In **Step 6a** you will
 create one dashboard in the "Listings TP" folder with panels for:
 request rate, p95 latency, error rate (Prometheus); a logs panel (Loki); and
 a traces panel (Tempo).
 
 Build each panel with the **Data source picker** (Prometheus / Loki / Tempo)
-and an expression (PromQL / LogQL / TraceQL). See exercise.md **Step 6**.
+and an expression (PromQL / LogQL / TraceQL). See exercise.md **Step 6a**.
 
 ---
 
 ## 6) Alerts — Prometheus rules
 
-These rules are the ones **you author in Step 6** (`prometheus/rules.yml`),
+These rules are the ones **you author in Step 6b** (`prometheus/rules.yml`),
 named `ApiDown`, `ApiHighErrorRate`, `ApiSlow`.
 
 ```bash
