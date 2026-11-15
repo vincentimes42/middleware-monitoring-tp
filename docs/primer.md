@@ -59,6 +59,8 @@ independent pipelines from the same TP1 app, all read by Grafana:
   (labels are high-cardinality; keep them stable and few).
 - Don't log the whole request body at `DEBUG` on the hot path "to be safe" —
   it is a log-volume bomb and a privacy risk.
+- Traces are data too: an HTTP client span records the full URL, query
+  string included (an address, a search term). Know what your spans carry.
 - Don't scrape the app for *logs* or *traces* — those are pushed/tailled,
   not scraped.
 - Don't change the API's **status codes or JSON** to make a panel pretty.
