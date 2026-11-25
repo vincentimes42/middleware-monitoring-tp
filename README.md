@@ -87,7 +87,9 @@ volume, used by Step 5, already exist in the base):
 
 Spring Boot 4 maps these standard `OTEL_*` variables to its own settings
 (`management.opentelemetry.map-environment-variables`, on by default): there
-is no tracing property to add in `application.yml`.
+is no tracing property to add in `application.yml`. They take effect with the
+tracing starter of Step 4 (item 1); setting them now is harmless, and Step 4
+item 2 only checks them.
 
 ### 1) Start the base (the API + its Postgres)
 
@@ -130,7 +132,7 @@ pipelines observe.
 ### 4) Stop
 
 ```bash
-cd "$MON_DIR"    && docker compose down       # keep data
+cd "$MON_DIR"    && docker compose down       # keep data (-v also deletes the Grafana dashboard built in the UI)
 cd "$TP1_DIR"    && docker compose down       # stop base (add -v to wipe DB)
 ```
 

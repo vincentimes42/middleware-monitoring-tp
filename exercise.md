@@ -235,9 +235,11 @@ in every later step to find out *which* side of a pipeline is broken.
    → Prometheus scrapes itself: this is a known-good series to compare with
    when the app's series are missing in Step 3.
 2. **Push** one line to Loki's **push API**, then **query** it back with
-   `LogQL` (`{service="listings-api"}`).
+   `LogQL` (`{service="step2-sanity"}`).
    → If this works and Step 5 shows nothing, the problem is Alloy or the
-   log file, not Loki.
+   log file, not Loki. The line has its **own** `service` label: with
+   `service="listings-api"`, it would answer the Step 5 queries even with no
+   Alloy pipeline at all.
 3. **Call** Tempo's search API (last 10 min) and confirm it returns a **valid
    JSON object with a `traces` key** (it may legitimately be **empty**).
    → An empty but valid answer proves Tempo is queryable; Step 4 fills it.
@@ -316,9 +318,12 @@ listings-api :8080                               Prometheus :9090
    rejected with a WARN). The `service` label comes from the scrape job
    (item 4); the same tag set in the app would be renamed `exported_service`.
 
-> **Checkpoint** — after a rebuild,
-> `curl -s http://localhost:8080/actuator/prometheus | grep -E "^listings_creations_total|_bucket" | head -3`
-> shows the counter and bucket lines.
+> **Checkpoint** — after a rebuild and one request,
+> `curl -s http://localhost:8080/actuator/prometheus | grep "^listings_creations_total"`
+> shows the counter, and
+> `curl -s http://localhost:8080/actuator/prometheus | grep -c "^http_server_requests_seconds_bucket"`
+> is above 0. (Do not stop at the first `_bucket` lines of the output: they
+> belong to `http_server_requests_active_seconds`, the requests in flight.)
 
 **B. In this repo (`monitoring/`) — scrape**
 
@@ -387,8 +392,9 @@ listings-api ── OTLP/HTTP ──► OTel Collector :4318 ── traces pipel
    → It brings Micrometer Tracing, its OpenTelemetry bridge, and the OTLP
    exporter in one dependency. Without a tracer on the classpath, no span is
    created and nothing is sent.
-2. **Set** the four `OTEL_*` environment variables on `listings-api` in the
-   base compose (block in **README → "0) Required base edit"**): service
+2. **Set** (or check, if you applied README → "0) Required base edit"
+   before Step 1: without this step's starter they had no effect) the four
+   `OTEL_*` environment variables on `listings-api` in the base compose: service
    name, OTLP endpoint `http://otel-collector:4318`, sampler `always_on`, and
    no OTLP metrics export.
    → Spring Boot maps these standard variables to its own settings. The
@@ -406,7 +412,8 @@ listings-api ── OTLP/HTTP ──► OTel Collector :4318 ── traces pipel
 
 4. **Add** the `otlp/tempo` **exporter** in
    `otel/collector-config.yaml` (`endpoint: tempo:4317`, TLS disabled) and
-   put it on the `traces` pipeline.
+   put it on the `traces` pipeline, then `docker compose restart
+   otel-collector` (the Collector has no reload endpoint).
    → The Collector receives spans but drops them if no exporter is listed in
    the pipeline. Between the Collector and Tempo, gRPC on 4317 is fine.
 
@@ -418,7 +425,8 @@ listings-api ── OTLP/HTTP ──► OTel Collector :4318 ── traces pipel
 
 5. **Add** the **Tempo** data source in
    `grafana/provisioning/datasources/datasources.yml`
-   (`type: tempo`, `url: http://tempo:3200`), or in the Grafana UI.
+   (`type: tempo`, `url: http://tempo:3200`), then `docker compose restart
+   grafana` (provisioning is read at start only), or add it in the Grafana UI.
    → Tempo stores traces whether or not Grafana knows it exists; the data
    source is what lets the Step 6a dashboard show them.
 
@@ -443,6 +451,7 @@ listings-api ── OTLP/HTTP ──► OTel Collector :4318 ── traces pipel
 <summary><strong>If you are stuck</strong></summary>
 
 - `Tracer#nextSpan().name(…)`, `start()`, `end()` in a `finally`, and `Tracer#withSpan(span)` so the log lines written inside carry its id. `@Observed` (with the `ObservedAspect`) is an alternative. Reference: <https://docs.spring.io/spring-boot/4.1/reference/actuator/tracing.html>
+- Each Prometheus scrape is an HTTP request too: expect a `http get /actuator/prometheus` trace every 10 s next to yours (filter them out with TraceQL, e.g. `name != "http get /actuator/prometheus"`).
 - If the search returns 0 traces: check the endpoint port (**4318**), the sampler (`always_on`), and the Collector pipeline's `exporters` line; then watch the Collector logs (`docker compose logs otel-collector`).
 - A TraceQL search on the span name: `curl -s "http://localhost:3200/api/search" --data-urlencode 'q={name="listings.create"}' -G`.
 
@@ -468,8 +477,8 @@ the third view of the same request.
 TP1 repo                                 shared volume              this repo
 listings-api ── Spring Boot file log ──► middleware-logs ──► Alloy ───── push ──► Loki :3100 ◄── Grafana
   LOGGING_FILE_NAME (base compose)       /listings-logs/            file_match → source.file      data source
-  [traceId-spanId] in each line          listings.log               → process (level) → write    (group B, item 3)
-  (group A)                                                         (group B, item 2)
+  [traceId-spanId] in each line          listings.log               → process (level) → write    (group B, item 4)
+  500 logged at ERROR (group A)                                     (group B, item 3)
 ```
 
 ### Build it
@@ -488,14 +497,26 @@ listings-api ── Spring Boot file log ──► middleware-logs ──► All
 > `/listings-logs/listings.log` because that is the path **Alloy's container
 > mounts** (see this repo's `docker-compose.yml`). Do not change it.
 
+2. **Log** the unexpected error at **ERROR** in TP1's catch-all handler
+   (`@ExceptionHandler(Exception.class)` of `GlobalExceptionHandler`), with
+   the exception: `log.error("…", ex)`. The response (500, TP1 JSON) does not
+   change.
+   → TP1 answers a 500 without writing anything: in Loki, the incident does
+   not exist, and `level="ERROR"` never returns a line. An error nobody
+   logged is invisible to the three pillars except the status code.
+
 > **Checkpoint** — after some traffic,
 > `docker compose exec listings-api tail -3 /listings-logs/listings.log`
 > (from `$TP1_DIR`) shows lines like
 > `2026-…Z  INFO 1 --- [listings] [http-nio-8080-exec-1] [<traceId>-<spanId>] c.a.l… : …`.
+> To get an ERROR line, cause a real 500: stop the database for one request
+> (`docker compose stop listings-postgres`, `curl -m 40 localhost:8080/listings`,
+> `docker compose start listings-postgres`; the request waits 30 s for a
+> connection, then answers 500).
 
 **B. In this repo (`monitoring/`) — ship and read**
 
-2. **Add** the log pipeline in `alloy/config.alloy`, in front of the
+3. **Add** the log pipeline in `alloy/config.alloy`, in front of the
    provided `loki.write` component (the skeleton shows the shape):
    `local.file_match` (the file + a `service` label), `loki.source.file`
    (tail it), and `loki.process` with a `stage.regex` that captures `level`
@@ -504,12 +525,13 @@ listings-api ── Spring Boot file log ──► middleware-logs ──► All
    block must point to the next with `forward_to`. Loki indexes labels only:
    without `service` the Loki query cannot select the stream, without
    `level` you cannot filter errors cheaply.
-3. **Add** the **Loki** data source in
+4. **Add** the **Loki** data source in
    `grafana/provisioning/datasources/datasources.yml`
-   (`type: loki`, `url: http://loki:3100`), or in the Grafana UI.
+   (`type: loki`, `url: http://loki:3100`), then `docker compose restart
+   grafana`, or add it in the Grafana UI.
    → Needed by the logs panel of Step 6a and the trace-to-logs jump of
    Step 7.
-4. **Reload** Alloy (`curl -X POST http://localhost:12345/-/reload`), then
+5. **Reload** Alloy (`curl -X POST http://localhost:12345/-/reload`), then
    generate some traffic on the app.
    → Alloy reads its configuration at start or on reload; a syntax error is
    reported in the reload answer and the previous config keeps running.
@@ -520,7 +542,8 @@ listings-api ── Spring Boot file log ──► middleware-logs ──► All
 - The line carries the **same `trace_id`** as the trace from Step 4
   (**correlation**).
 - The line has a **filterable `level`** label (`INFO` / `WARN` / `ERROR`) —
-  `{service="listings-api", level="ERROR"}` works.
+  `{service="listings-api", level="ERROR"}` returns the line of a 500 (item 2),
+  with its stack trace.
 
 ### Verify
 
@@ -532,6 +555,7 @@ listings-api ── Spring Boot file log ──► middleware-logs ──► All
 
 - Alloy references: `local.file_match`, `loki.source.file`, `loki.process` in <https://grafana.com/docs/alloy/latest/reference/components/>.
 - Spring Boot pads the level to 5 characters (`" INFO"`, `"ERROR"`): between the timestamp and the level there are **one or two** spaces. A regex with a single space misses every INFO and WARN line. Use `\s+`.
+- A stack trace is many lines without a timestamp: without `stage.multiline` (first line = `^\d{4}-\d{2}-\d{2}T`), each becomes an entry with no `level`. Its default `max_lines` (128) cuts a long Spring / JDBC stack trace in two: raise it.
 - `{service="listings-api"} |= "ERROR"` searches the text; `{…, level="ERROR"}` uses the label (faster, and only works if the regex stage extracted it).
 - If Loki has **no** lines: the file is missing (check `LOGGING_FILE_NAME` in the base compose; `LOG_FILE` is not read by Spring Boot) or the Alloy pipeline is incomplete: the UI <http://localhost:12345> shows every component, its health, and its arguments (`docker compose logs alloy` for errors).
 - Reference: <https://docs.spring.io/spring-boot/4.1/reference/features/logging.html>
@@ -576,8 +600,9 @@ This step is **in the Grafana UI** (no JSON committed):
    whether users are affected; the logs and traces panels give the *why* on
    the same screen.
 2. **Screenshot** the dashboard into your team README.
-   → The dashboard lives in the Grafana UI only: the screenshot is the
-   evidence that it existed and showed data.
+   → The dashboard lives in the Grafana UI only (in the `grafana-data`
+   volume): the screenshot is the evidence that it existed and showed data,
+   and `docker compose down -v` deletes it.
 
 ### Expected behavior
 - **One dashboard** (in the UI) with **5-6 self-built panels**: request rate,
@@ -592,6 +617,8 @@ This step is **in the Grafana UI** (no JSON committed):
 <summary><strong>If you are stuck</strong></summary>
 
 - The p95 panel needs the `_bucket` series of Step 3 (percentile histogram): without them `histogram_quantile` returns nothing.
+- Leave the Prometheus scrapes out of the golden signals (`uri!~"/actuator.*"`): at lab traffic they are a large share of the requests.
+- Tempo's search is **not sorted by date**: over a wide range, the traces panel may list old traces only. Give it a short relative time (panel *Query options*, e.g. 5m) or a larger limit.
 
 </details>
 
@@ -639,7 +666,7 @@ This step is **in this repo** (`prometheus/rules.yml`):
 ### Verify
 
 - [ ] [`docs/verification.md` §6](docs/verification.md): `ApiDown` reaches `state: firing` after `docker compose stop listings-api` (then `docker compose start listings-api`)
-- [ ] (Optional) **`ApiHighErrorRate` firing**: send a steady mix of normal and failing requests for ~2 min (any TP1 call that answers 5xx; an **authenticated** request to an unknown path does, because TP1's catch-all handler maps it to 500 — anonymous, it is a 401)
+- [ ] (Optional) **`ApiHighErrorRate` firing**: a real dependency failure under load — stop the database (`docker compose stop listings-postgres`) and keep requests going for ~3 min ([`docs/verification.md` §6](docs/verification.md)): every request waits for a connection, then answers 500. `ApiSlow` fires too (p95 = the 30 s wait).
 
 <details>
 <summary><strong>If you are stuck</strong></summary>
@@ -699,7 +726,7 @@ Prometheus http_server_requests_seconds_count ──► SLO panel: 1 - (5xx / to
 <summary><strong>If you are stuck</strong></summary>
 
 - The Grafana Tempo data source has a **traces-to-logs** setting (`jsonData.tracesToLogsV2`): `datasourceUid` of Loki, `filterByTraceID: true`, and `tags` mapping the span attribute `service.name` to the Loki label `service` (the label keys differ, see *Conventions*). Reference: <https://grafana.com/docs/grafana/latest/datasources/tempo/configure-tempo-data-source/provision/>
-- SLO ratio PromQL: `1 - (sum(rate(http_server_requests_seconds_count{status=~"5.."}[1h])) / sum(rate(http_server_requests_seconds_count[1h])))` — use a window that matches your data: `[1h]` in a lab, `[24h]` / `[30d]` in production.
+- SLO ratio PromQL: `1 - ((sum(rate(http_server_requests_seconds_count{service="listings-api", uri!~"/actuator.*", status=~"5.."}[1h])) or vector(0)) / sum(rate(http_server_requests_seconds_count{service="listings-api", uri!~"/actuator.*"}[1h])))` — the scrapes are not user requests, and `or vector(0)` gives 100 % (not "No data") when no 5xx ever happened. Use a window that matches your data: `[1h]` in a lab, `[24h]` / `[30d]` in production.
 
 </details>
 
@@ -757,6 +784,8 @@ POST /listings ──► listings-api (span listings.create)
 <summary><strong>If you are stuck</strong></summary>
 
 - The simplest "second service" is an **in-app downstream call** — a `RestTemplate`/`WebClient` call to another endpoint, also traced. A full 2nd Spring Boot app in Docker works too (same OTLP endpoint, `traceparent` propagation), but keep it small.
+- TP1 already has a slow downstream: the geocoding call of a V2 creation with an address (TP1 Step 7). It is traced only if its client comes from the injected `RestClient.Builder`, not `RestClient.builder()`. In Spring Boot 4 that builder is auto-configured by `spring-boot-starter-restclient` (without it: *required a bean of type 'RestClient$Builder'*).
+- A client span records the full URL (`http.url`), query string included: for the geocoder, the listing's address, a private V2 field. Say it in your README, or filter it (an `ObservationFilter`): traces are data like logs (see `docs/primer.md`).
 
 </details>
 
@@ -765,7 +794,7 @@ POST /listings ──► listings-api (span listings.create)
 ## Step 9 — Final Integration   DELIVERY
 
 **Outcome** — The whole stack boots cleanly from **your own configs** (no
-solution files present): all six services healthy, TP1 on `8080`, traffic
+solution files present): all six services up (five healthy), TP1 on `8080`, traffic
 yields **metrics in Prometheus, traces in Tempo, logs in Loki**, one dashboard
 shows the three pillars, and `ApiDown` has been shown **firing**. The
 evaluator can start the stack and **trust the output**.
@@ -775,7 +804,7 @@ proves it works from your committed configuration alone, and that you can
 follow one request through the three pillars.
 
 ### Final checks
-- [ ] `cd "$MON_DIR" && docker compose up -d` → **all six services healthy**; the stack boots from the **student-filled** configs (no solution files present)
+- [ ] `cd "$MON_DIR" && docker compose up -d` → **all six services up**, the five with a healthcheck **healthy** (`otel-collector` has none: its image has no shell); the stack boots from the **student-filled** configs (no solution files present)
 - [ ] `cd "$TP1_DIR" && mvn verify && docker compose up -d` → TP1 builds and runs on `8080`; generating traffic yields **metrics in Prometheus, traces in Tempo, logs in Loki**
 - [ ] **One** Grafana dashboard (in the UI, screenshot in the README) shows the three pillars; **three** alert rules in `prometheus/rules.yml` and **`ApiDown`** has been shown `firing`
 - [ ] Your **five config files** (`prometheus/prometheus.yml`, `prometheus/rules.yml`, `otel/collector-config.yaml`, `alloy/config.alloy`, `grafana/provisioning/datasources/datasources.yml`) are in **this** repo; the **reference solutions** are **not**
@@ -797,7 +826,7 @@ follow one request through the three pillars.
 | Item | Detail |
 |---|---|
 | Git repository (pair) | TP1 repo modified **+** this `monitoring/` folder with **your** pipeline configs |
-| `docker compose up` | 6 services healthy from **student-filled** configs |
+| `docker compose up` | 6 services up (5 healthy, `otel-collector` has no healthcheck) from **student-filled** configs |
 | `mvn verify` (TP1) | builds; instrumentation wired |
 | Grafana | **One dashboard (in the UI; screenshot in README), 3 data sources (in `datasources.yml`), 3 alert rules in `rules.yml` (`ApiDown` demonstrably firing)** |
 | README.md | stack run, the 3 pipelines, ports, 1 alert + 1 dashboard **screenshot** (not the dashboard JSON) |
