@@ -76,20 +76,27 @@ layer:
 
 Every step from 3 to 6 builds or reads one arrow of this picture.
 
+```mermaid
+flowchart LR
+    app["<b>listings-api :8080</b><br/><i>TP1 repo</i>"]
+    subgraph mon["this repo (monitoring/)"]
+        prom[("<b>Prometheus :9090</b><br/>prometheus.yml · Step 3<br/>rules.yml: alerts · Step 6b")]
+        col["<b>OTel Collector :4318</b><br/>collector-config.yaml · Step 4"]
+        tempo[("<b>Tempo :3200</b>")]
+        alloy["<b>Grafana Alloy</b><br/>config.alloy · Step 5"]
+        loki[("<b>Loki :3100</b>")]
+        graf["<b>Grafana :3000</b><br/>data sources · Steps 4-5<br/>dashboard · Step 6a"]
+    end
+    app -. "metrics<br/>pulled (scrape)" .-> prom
+    app -- "traces<br/>OTLP/HTTP" --> col --> tempo
+    app -- "logs<br/>file on volume" --> alloy --> loki
+    prom -- "PromQL" --> graf
+    tempo -- "TraceQL" --> graf
+    loki -- "LogQL" --> graf
 ```
-                       TP1 repo (../springboot)                 this repo (monitoring/)
-                       ────────────────────────                 ───────────────────────
-            ┌── /actuator/prometheus ◄──── scrape ──────────── Prometheus :9090 ──┐   (Step 3)
-            │      (Micrometer)            prometheus/prometheus.yml               │
-            │                                                                      │
-listings-api├── OTLP HTTP ──────────────► OTel Collector :4318 ──► Tempo :3200 ─────┼──► Grafana :3000
-  :8080     │      (OTel tracing)          otel/collector-config.yaml              │    datasources.yml
-            │                                                                      │    + dashboard (UI)
-            └── /listings-logs/listings.log ──► Alloy ─────────► Loki :3100 ───────┘    (Step 6a)
-                   (Spring Boot log file,   alloy/config.alloy                         (Steps 4-5 add
-                    volume middleware-logs)                                             the data sources)
-                                                    Prometheus ── prometheus/rules.yml ── alerts (Step 6b)
-```
+
+Dashed arrow: pulled by Prometheus; solid arrows: pushed. In the step
+diagrams, the highlighted boxes are the files or code you change in that step.
 
 The **TP1 app is a container on the shared `middleware` network** (base
 `../springboot/docker-compose.yml`), so it is reached by **container name**,
@@ -109,6 +116,28 @@ not `localhost`:
 | **Core** (required) | 1 · 2 · 3 · 4 · 5 · 6a · 6b |
 | **Bonus** (start only when the core `Verify` sections are green) | 7 (correlation & first SLO) · 8 (two services / a slow dependency) |
 | **Delivery** | 9 (final integration) |
+
+```mermaid
+flowchart TD
+    subgraph core1["CORE, in order"]
+        direction LR
+        s1["1<br/>stack up"] --> s2["2<br/>read backends"] --> s3["3<br/>metrics"] --> s4["4<br/>traces"]
+    end
+    subgraph core2[" "]
+        direction LR
+        s5["5<br/>logs"] --> s6a["6a<br/>dashboard"] --> s6b["6b<br/>alerts"]
+    end
+    subgraph bonus["BONUS"]
+        direction LR
+        s7["7<br/>correlation, SLO"]
+        s8["8<br/>two services"]
+        s7 ~~~ s8
+    end
+    core1 --> core2 --> s9["9<br/>delivery"]
+    core2 -. "core green" .-> bonus -.-> s9
+    classDef bonusStep stroke-dasharray:4 3
+    class s7,s8 bonusStep
+```
 
 Bonus steps are optional but count for the grade if you deliver them.
 
@@ -289,11 +318,17 @@ and Prometheus decides when to collect them. This is the cheapest pillar
 
 ### How it fits
 
-```
-TP1 repo                                         this repo
-listings-api :8080                               Prometheus :9090
-  Micrometer registry (group A, items 1-2)  ◄─── scrape every 10 s ──── job listings-api (group B, item 4)
-  GET /actuator/prometheus  (text format)        adds the label service="listings-api"
+```mermaid
+flowchart LR
+    subgraph tp1["TP1 repo"]
+        reg["<b>Micrometer registry</b> · group A, items 1-2<br/>GET /actuator/prometheus (text format)"]
+    end
+    subgraph mon["this repo"]
+        job["<b>Prometheus :9090</b><br/>job listings-api · group B, item 4<br/><i>adds the label service=#quot;listings-api#quot;</i>"]
+    end
+    reg -. "scraped every 10 s (pull)" .-> job
+    classDef todo fill:#fde68a,stroke:#b45309,stroke-width:2px,color:#111
+    class reg,job todo
 ```
 
 ### Build it
@@ -376,11 +411,21 @@ collector, so the app does not need to know which tracing backend is used.
 
 ### How it fits
 
-```
-TP1 repo                                 this repo
-listings-api ── OTLP/HTTP ──► OTel Collector :4318 ── traces pipeline ──► Tempo :3200 ◄── Grafana
- (group A: starter,           receivers: otlp        exporters: otlp/tempo           data source
-  OTEL_* env, span)           (group B, item 4)      (group B, item 4)              (group C, item 5)
+```mermaid
+flowchart LR
+    subgraph tp1["TP1 repo"]
+        app["<b>listings-api</b> · group A<br/>starter, OTEL_* env,<br/>span listings.create"]
+    end
+    subgraph colsg["Collector :4318, traces"]
+        rcv["receivers: otlp"] --> exp["<b>exporters: otlp/tempo</b><br/>group B, item 4"]
+    end
+    tempo[("Tempo :3200")]
+    ds["<b>Grafana data source</b><br/>group C, item 5"]
+    app -- "OTLP/HTTP (push)" --> rcv
+    exp -- "gRPC :4317" --> tempo
+    ds -- "queries" --> tempo
+    classDef todo fill:#fde68a,stroke:#b45309,stroke-width:2px,color:#111
+    class app,exp,ds todo
 ```
 
 ### Build it
@@ -473,12 +518,24 @@ the third view of the same request.
 
 ### How it fits
 
-```
-TP1 repo                                 shared volume              this repo
-listings-api ── Spring Boot file log ──► middleware-logs ──► Alloy ───── push ──► Loki :3100 ◄── Grafana
-  LOGGING_FILE_NAME (base compose)       /listings-logs/            file_match → source.file      data source
-  [traceId-spanId] in each line          listings.log               → process (level) → write    (group B, item 4)
-  500 logged at ERROR (group A)                                     (group B, item 3)
+```mermaid
+flowchart TD
+    app["<b>listings-api</b> · group A<br/>LOGGING_FILE_NAME (base compose)<br/>[traceId-spanId] in each line, 500 logged at ERROR"]
+    file[("shared volume middleware-logs<br/>/listings-logs/listings.log")]
+    subgraph alloy["Alloy · group B, item 3"]
+        fm["<b>local.file_match</b><br/>the file + label service"]
+        src["<b>loki.source.file</b><br/>tails it"]
+        proc["<b>loki.process</b><br/>stage.multiline · stage.regex (level) · stage.labels"]
+        wr["loki.write<br/><i>provided</i>"]
+        fm -- "targets" --> src -- "forward_to" --> proc -- "forward_to" --> wr
+    end
+    loki[("Loki :3100")]
+    ds["<b>Grafana data source</b><br/>group B, item 4"]
+    app -- "Spring Boot file log" --> file --> fm
+    wr -- "push" --> loki
+    ds -- "queries" --> loki
+    classDef todo fill:#fde68a,stroke:#b45309,stroke-width:2px,color:#111
+    class app,fm,src,proc,ds todo
 ```
 
 ### Build it
@@ -516,13 +573,11 @@ listings-api ── Spring Boot file log ──► middleware-logs ──► All
 
 **B. In this repo (`monitoring/`) — ship and read**
 
-3. **Add** the log pipeline in `alloy/config.alloy`, in front of the
-   provided `loki.write` component (the skeleton shows the shape):
-   `local.file_match` (the file + a `service` label), `loki.source.file`
-   (tail it), and `loki.process` with a `stage.regex` that captures `level`
-   and a `stage.labels` that turns it into a label.
-   → An Alloy component does nothing until another one forwards to it: each
-   block must point to the next with `forward_to`. Loki indexes labels only:
+3. **Add** the log pipeline in `alloy/config.alloy`: the three components of
+   the diagram, in front of the provided `loki.write` (the skeleton shows the
+   shape).
+   → An Alloy component does nothing until the previous one sends to it
+   (`targets`, then `forward_to`). Loki indexes labels only:
    without `service` the Loki query cannot select the stream, without
    `level` you cannot filter errors cheaply.
 4. **Add** the **Loki** data source in
@@ -577,25 +632,30 @@ screen.
 
 ### How it fits
 
-```
-Prometheus ──┬──► Grafana dashboard (UI): rate, p95, error rate     (Step 6a)    
-             │
-             └──► rules.yml: ApiDown, ApiHighErrorRate, ApiSlow     (Step 6b)          
-                   evaluated every interval ── condition true for `for:` ──► state: firing
-Loki  ───────────► Grafana dashboard: logs panel                    (Step 6a)    
-Tempo ───────────► Grafana dashboard: traces panel                  (Step 6a)    
+```mermaid
+flowchart LR
+    prom[("Prometheus")] --> p1 & p2 & p3
+    loki[("Loki")] --> p4
+    tempo[("Tempo")] --> p5
+    subgraph dash["dashboard · item 1"]
+        p1["request rate"]
+        p2["p95 latency"]
+        p3["error rate"]
+        p4["logs panel"]
+        p5["traces panel"]
+    end
+    classDef todo fill:#fde68a,stroke:#b45309,stroke-width:2px,color:#111
+    class p1,p2,p3,p4,p5 todo
 ```
 
 ### Build it
 
 This step is **in the Grafana UI** (no JSON committed):
 
-1. **Build the dashboard in the Grafana UI** (Dashboards → New). Add panels
-   one by one and pick the **right data source per panel**: **request rate**,
-   **p95 latency**, **error rate** → **Prometheus**; a **logs** panel →
-   **Loki**; a **traces** panel → **Tempo**. The data sources are **already
-   wired** (Prometheus pre-provisioned, Tempo added Step 4, Loki added Step 5)
-   — do **not** re-add them here.
+1. **Build the dashboard in the Grafana UI** (Dashboards → New): one panel
+   per box of the diagram, each on its data source. The data sources are
+   **already wired** (Prometheus pre-provisioned, Tempo added Step 4, Loki
+   added Step 5) — do **not** re-add them here.
    → Rate, latency, and errors are the "golden signals": together they tell
    whether users are affected; the logs and traces panels give the *why* on
    the same screen.
@@ -605,9 +665,8 @@ This step is **in the Grafana UI** (no JSON committed):
    and `docker compose down -v` deletes it.
 
 ### Expected behavior
-- **One dashboard** (in the UI) with **5-6 self-built panels**: request rate,
-  p95 latency, error rate (Prometheus) + a **logs** panel (Loki) + a
-  **traces** panel (Tempo).
+- **One dashboard** (in the UI) with the **5 self-built panels** of the
+  diagram (a 6th of your choice is fine).
 
 ### Verify
 
@@ -633,6 +692,22 @@ This step is **in the Grafana UI** (no JSON committed):
 *being told* an incident is happening. A rule is only trusted once it has been
 seen firing.
 
+### How it fits
+
+Prometheus evaluates every rule of `rules.yml` at each evaluation interval;
+each rule moves through three states:
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> inactive
+    inactive --> pending : expr true
+    pending --> firing : still true after the for duration
+    pending --> inactive : false again
+    firing --> inactive : false again
+    note right of pending : listed in /api/v1/rules, nothing sent yet
+```
+
 ### Build it
 
 This step is **in this repo** (`prometheus/rules.yml`):
@@ -642,7 +717,7 @@ This step is **in this repo** (`prometheus/rules.yml`):
    (`listings-api`). Each rule has `alert`, `expr`, `for`, `labels`,
    `annotations.summary`.
    → Rules in a file are versioned and survive a `docker compose down`;
-   `for:` avoids paging someone for a single bad scrape.
+   `for:` is the `pending` stage: a single bad scrape never reaches `firing`.
 2. **Reload** Prometheus: `curl -X POST http://localhost:9090/-/reload` (or
    `docker compose restart prometheus`).
    → Prometheus reads `rules.yml` at start or on reload only; an edited file
@@ -671,7 +746,7 @@ This step is **in this repo** (`prometheus/rules.yml`):
 <details>
 <summary><strong>If you are stuck</strong></summary>
 
-- **`ApiDown` is the easiest to prove in a lab** — the *target* goes down (`docker compose stop listings-api`), and after the rule's `for:` elapses its `state` flips to **`firing`**. Use a short `for: 1m` (or 30 s) so the proof is not slow.
+- **`ApiDown` is the easiest to prove in a lab** — the *target* goes down (`docker compose stop listings-api`): `pending` first, `firing` once `for:` has elapsed. Use a short `for: 1m` (or 30 s) so the proof is not slow.
 - The three rules can share **one group** in `rules.yml`; the skeleton already shows the shape.
 - `ApiSlow` and the p95 panel need the `_bucket` series of Step 3 (percentile histogram): without them `histogram_quantile` returns nothing and the alert can never fire.
 - Full copy-pasteable walk to see each rule in `state: firing`: [`docs/verification.md` §6](docs/verification.md) (Alerts).
@@ -693,9 +768,13 @@ turns "the API is up" into a measurable promise: "99 % of requests succeed".
 
 ### How it fits
 
-```
-Tempo trace (trace_id = abc…) ── tracesToLogs mapping (Tempo data source) ──► Loki {service="listings-api"} |= "abc…"
-Prometheus http_server_requests_seconds_count ──► SLO panel: 1 - (5xx / total)
+```mermaid
+flowchart LR
+    panel["<b>dashboard panel</b><br/>p95 spike at 14:02"] -- "same time window" --> trace["<b>Tempo trace</b><br/>trace_id = abc…"]
+    trace -- "tracesToLogs mapping<br/>item 1" --> logs["<b>Loki</b><br/>{service=#quot;listings-api#quot;} #124;= #quot;abc…#quot;"]
+    prom[("Prometheus<br/>http_server_requests_seconds_count")] --> slo["<b>SLO panel</b> · item 2<br/>1 - (5xx / total)"]
+    classDef todo fill:#fde68a,stroke:#b45309,stroke-width:2px,color:#111
+    class logs,slo todo
 ```
 
 ### Build it
@@ -745,11 +824,22 @@ services is still one trace, and you see which service is slow.
 
 ### How it fits
 
-```
-POST /listings ──► listings-api (span listings.create)
-                       │  HTTP call, header traceparent: <trace_id>-<span_id>
-                       ▼
-                   downstream (child span) ── both spans exported via the Collector ──► Tempo: one trace
+```mermaid
+sequenceDiagram
+    participant C as client
+    participant A as listings-api
+    participant D as downstream
+    participant O as OTel Collector
+    participant T as Tempo
+    C->>A: POST /listings
+    Note over A: span listings.create
+    A->>D: HTTP call, header traceparent: trace_id-span_id
+    Note over D: child span, same trace_id
+    D-->>A: response
+    A-->>C: 201
+    A->>O: span listings.create (OTLP)
+    D->>O: child span (OTLP)
+    O->>T: both spans: one trace
 ```
 
 ### Build it
@@ -833,20 +923,12 @@ follow one request through the three pillars.
 
 ---
 
-## Appendix A - The three pipelines at a glance
-
-| Pillar | App produces | Middleware | Backend | Query lang |
-|---|---|---|---|---|
-| Metrics | `/actuator/prometheus` | **Prometheus scrape** | Prometheus | **PromQL** |
-| Traces | OTLP/HTTP (`otel-collector:4318`, network name) | **OTel Collector** | Tempo | **TraceQL** / HTTP API |
-| Logs | file `/listings-logs/listings.log` (Spring Boot, `LOGGING_FILE_NAME`) | **Grafana Alloy** | Loki | **LogQL** |
-
-## Appendix B - Useful endpoints
+## Appendix A - Useful endpoints
 
 All the backend URLs (PromQL, LogQL, TraceQL, Tempo search/traces, alert rules,
 Grafana) are listed run-ready in [`docs/verification.md`](docs/verification.md).
 
-## Appendix C - What is NOT to be committed
+## Appendix B - What is NOT to be committed
 
 - The **reference solutions** (live in `../../solutions/monitoring/`, used by the
   supervisor) must **not** be copied into this repo.
