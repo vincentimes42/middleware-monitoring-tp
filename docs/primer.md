@@ -42,7 +42,7 @@ services, each with one job:
 | Tempo | `grafana/tempo:2.6.1` | 3200 | store + query **traces** |
 | OTel Collector | `otel/opentelemetry-collector-contrib:0.108.0` | 4317 (gRPC), 4318 (HTTP) | receive **OTLP** spans from the app (HTTP, 4318), export to Tempo |
 | Grafana Alloy | `grafana/alloy:v1.21.3` | 12345 (UI) | tail the app log file, ship to Loki |
-| Grafana | `grafana/grafana:11.1.0` | 3000 | one UI over all three (datasources pre-provisioned) |
+| Grafana | `grafana/grafana:11.1.0` | 3000 | one UI over all three (Prometheus data source pre-provisioned; Tempo and Loki added in Steps 4-5) |
 
 **Data flow** (this is exactly what you will make work in Steps 3-6) — three
 independent pipelines from the same TP1 app, all read by Grafana:
